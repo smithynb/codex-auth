@@ -128,6 +128,15 @@ fn resetPartsAlloc(reset_at: i64, now: i64) !ResetParts {
     };
 }
 
+pub fn formatExpiryAlloc(allocator: std.mem.Allocator, ts: i64) ![]u8 {
+    var tm: c.struct_tm = undefined;
+    if (!localtimeCompat(ts, &tm)) return allocator.dupe(u8, "unknown");
+    var buffer: [64]u8 = undefined;
+    const len = c.strftime(&buffer, buffer.len, "%Y-%m-%d %H:%M %Z", &tm);
+    if (len == 0) return allocator.dupe(u8, "unknown");
+    return allocator.dupe(u8, buffer[0..len]);
+}
+
 fn localtimeCompat(ts: i64, out_tm: *c.struct_tm) bool {
     if (comptime builtin.os.tag == .windows) {
         if (comptime @hasDecl(c, "_localtime64_s") and @hasDecl(c, "__time64_t")) {

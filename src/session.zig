@@ -474,7 +474,7 @@ fn parsePlanType(s: []const u8) registry.PlanType {
     return registry.normalizePlanType(s);
 }
 
-fn parseTimestampMs(s: []const u8) ?i64 {
+pub fn parseTimestampMs(s: []const u8) ?i64 {
     if (s.len < 20) return null;
     if (s[4] != '-' or s[7] != '-' or s[10] != 'T' or s[13] != ':' or s[16] != ':') return null;
 

@@ -2,8 +2,11 @@ const std = @import("std");
 const auth = @import("../auth/auth.zig");
 const chatgpt_http = @import("http.zig");
 const registry = @import("../registry/root.zig");
+const app_runtime = @import("../core/runtime.zig");
+const session = @import("../session.zig");
 
 pub const default_usage_endpoint = "https://chatgpt.com/backend-api/wham/usage";
+pub const reset_credits_endpoint = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 
 pub const UsageFetchResult = struct {
     snapshot: ?registry.RateLimitSnapshot,
@@ -171,6 +174,30 @@ pub fn fetchUsageForAuthPathsDetailedBatch(
         }
     }
 
+    // Optional enrichment: failure must not discard the main usage response.
+    var has_reset_credits = false;
+    for (results) |result| {
+        if (result.snapshot) |snapshot| {
+            if ((snapshot.reset_credits orelse 0) > 0) has_reset_credits = true;
+        }
+    }
+    if (has_reset_credits) {
+        if (chatgpt_http.runGetJsonBatchCommand(allocator, reset_credits_endpoint, requests.items, max_concurrency)) |reset_results_value| {
+            var reset_results = reset_results_value;
+            defer reset_results.deinit(allocator);
+            const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
+            for (request_indexes, 0..) |request_idx, result_idx| {
+                const unique_idx = request_idx orelse continue;
+                if (results[result_idx].snapshot) |*snapshot| {
+                    if ((snapshot.reset_credits orelse 0) <= 0) continue;
+                    const response = reset_results.items[unique_idx];
+                    if (response.outcome != .ok or isNonSuccessStatus(response.status_code)) continue;
+                    snapshot.reset_credits_expires_at = parseResetCreditExpiry(allocator, response.body, now) catch null;
+                }
+            }
+        } else |_| {}
+    }
+
     return results;
 }
 
@@ -200,8 +227,21 @@ pub fn fetchUsageForTokenDetailed(
         return .{ .snapshot = null, .status_code = http_result.status_code, .error_code = error_code };
     }
 
+    var snapshot = try parseUsageResponse(allocator, http_result.body);
+    if (std.mem.eql(u8, endpoint, default_usage_endpoint)) {
+        if (snapshot) |*value| {
+            if ((value.reset_credits orelse 0) > 0) {
+                if (runUsageCommand(allocator, reset_credits_endpoint, access_token, account_id)) |response| {
+                    defer allocator.free(response.body);
+                    if (!isNonSuccessStatus(response.status_code)) {
+                        value.reset_credits_expires_at = parseResetCreditExpiry(allocator, response.body, std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds()) catch null;
+                    }
+                } else |_| {}
+            }
+        }
+    }
     return .{
-        .snapshot = try parseUsageResponse(allocator, http_result.body),
+        .snapshot = snapshot,
         .status_code = http_result.status_code,
         .error_code = error_code,
     };
@@ -297,6 +337,40 @@ pub fn parseUsageResponse(allocator: std.mem.Allocator, body: []const u8) !?regi
     }
 
     return snapshot;
+}
+
+pub fn parseResetCreditExpiry(allocator: std.mem.Allocator, body: []const u8, now: i64) !?i64 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |obj| obj,
+        else => return null,
+    };
+    const credits = switch (root.get("credits") orelse return null) {
+        .array => |array| array,
+        else => return null,
+    };
+    var earliest: ?i64 = null;
+    for (credits.items) |credit| {
+        const obj = switch (credit) {
+            .object => |value| value,
+            else => continue,
+        };
+        const status = switch (obj.get("status") orelse continue) {
+            .string => |value| value,
+            else => continue,
+        };
+        if (!std.mem.eql(u8, status, "available")) continue;
+        const expires = switch (obj.get("expires_at") orelse continue) {
+            .string => |value| value,
+            else => continue,
+        };
+        const timestamp_ms = session.parseTimestampMs(expires) orelse continue;
+        const timestamp = @divTrunc(timestamp_ms, 1000);
+        if (timestamp <= now) continue;
+        if (earliest == null or timestamp < earliest.?) earliest = timestamp;
+    }
+    return earliest;
 }
 
 fn parseResetCredits(v: std.json.Value) ?i64 {

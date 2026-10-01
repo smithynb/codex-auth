@@ -198,6 +198,31 @@ test "writeAccountsTable shows reset credits independently" {
     try std.testing.expect(std.mem.indexOf(u8, output, "2") != null);
 }
 
+test "writeAccountsTable shows earliest reset credit expiry beside count" {
+    const gpa = std.testing.allocator;
+    var reg = makeTestRegistry();
+    defer reg.deinit(gpa);
+    try appendTestAccount(gpa, &reg, "user-1::acc-1", "user@example.com", "", .plus);
+    reg.accounts.items[0].last_usage = .{
+        .primary = null,
+        .secondary = null,
+        .credits = null,
+        .reset_credits = 3,
+        .reset_credits_expires_at = 4070908800,
+        .plan_type = .plus,
+    };
+    var buffer: [2048]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try writeAccountsTable(&writer, &reg, false);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "3 (exp ") != null);
+
+    // Unknown or stale expiry retains the credit count without inventing a date.
+    reg.accounts.items[0].last_usage.?.reset_credits_expires_at = 1;
+    writer = .fixed(&buffer);
+    try writeAccountsTable(&writer, &reg, false);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "(exp ") == null);
+}
+
 test "writeAccountsTable shows usage override statuses for failed refreshes" {
     const gpa = std.testing.allocator;
     var reg = makeTestRegistry();

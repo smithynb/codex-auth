@@ -98,7 +98,19 @@ fn resetCreditsCellAlloc(
 ) ![]u8 {
     if (usage_override) |value| return allocator.dupe(u8, value);
     const count = if (usage) |snapshot| snapshot.reset_credits else null;
-    return if (count) |value| std.fmt.allocPrint(allocator, "{d}", .{value}) else allocator.dupe(u8, "-");
+    if (count) |value| {
+        if (value > 0) {
+            if (usage.?.reset_credits_expires_at) |expires_at| {
+                if (expires_at > std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds()) {
+                    const expiry = try rate_limit.formatExpiryAlloc(allocator, expires_at);
+                    defer allocator.free(expiry);
+                    return std.fmt.allocPrint(allocator, "{d} (exp {s})", .{ value, expiry });
+                }
+            }
+        }
+        return std.fmt.allocPrint(allocator, "{d}", .{value});
+    }
+    return allocator.dupe(u8, "-");
 }
 
 fn integerCreditBalanceAlloc(allocator: std.mem.Allocator, balance: []const u8) ![]u8 {
@@ -395,14 +407,6 @@ fn adjustListWidths(widths: *[7]usize, prefix_len: usize, sep_len: usize) void {
     }
     if (over == 0) return;
 
-    if (widths[3] > min_reset_credits) {
-        const reducible = widths[3] - min_reset_credits;
-        const reduce = @min(reducible, over);
-        widths[3] -= reduce;
-        over -= reduce;
-    }
-    if (over == 0) return;
-
     if (widths[4] > min_rate) {
         const reducible = widths[4] - min_rate;
         const reduce = @min(reducible, over);
@@ -424,6 +428,14 @@ fn adjustListWidths(widths: *[7]usize, prefix_len: usize, sep_len: usize) void {
         const reduce = @min(reducible, over);
         widths[6] -= reduce;
         over -= reduce;
+    }
+    if (over == 0) return;
+
+    // Preserve the reset-credit expiry before shortening it on narrow terminals.
+    if (widths[3] > min_reset_credits) {
+        const reducible = widths[3] - min_reset_credits;
+        const reduce = @min(reducible, over);
+        widths[3] -= reduce;
     }
 }
 

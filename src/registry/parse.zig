@@ -62,6 +62,7 @@ pub fn parseUsage(allocator: std.mem.Allocator, v: std.json.Value, schema_versio
     if (obj.get("secondary")) |p| snap.secondary = parseWindow(p);
     if (obj.get("credits")) |c| snap.credits = parseCredits(allocator, c);
     snap.reset_credits = readInt(obj.get("reset_credits"));
+    snap.reset_credits_expires_at = readInt(obj.get("reset_credits_expires_at"));
     return snap;
 }
 

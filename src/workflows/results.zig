@@ -55,6 +55,7 @@ pub const UsageView = struct {
     secondary: ?registry.RateLimitWindow = null,
     credits: ?CreditsView = null,
     reset_credits: ?i64 = null,
+    reset_credits_expires_at: ?i64 = null,
     refresh: UsageRefreshView,
 
     pub fn deinit(self: *UsageView, allocator: std.mem.Allocator) void {
@@ -306,6 +307,7 @@ fn buildUsageView(
         .secondary = snapshot.secondary,
         .credits = credits,
         .reset_credits = snapshot.reset_credits,
+        .reset_credits_expires_at = snapshot.reset_credits_expires_at,
         .refresh = refresh,
     };
 }

@@ -3,6 +3,41 @@ const app_runtime = @import("codex_auth").core.runtime;
 const registry = @import("codex_auth").registry;
 const usage_api = @import("codex_auth").api.usage;
 
+test "reset credit expiry selects earliest available unexpired credit" {
+    const body =
+        \\{"credits":[
+        \\ {"status":"available","expires_at":"2026-10-29T18:52:08.047922Z"},
+        \\ {"status":"redeemed","expires_at":"2026-09-01T00:00:00Z"},
+        \\ {"status":"available","expires_at":"2026-10-04T21:52:51.074338Z"},
+        \\ {"status":"available","expires_at":"2020-01-01T00:00:00Z"},
+        \\ {"status":"available","expires_at":"invalid"},
+        \\ {"status":"available","expires_at":null}
+        \\]}
+    ;
+    const expected_ms = @import("codex_auth").session.parseTimestampMs("2026-10-04T21:52:51Z").?;
+    try std.testing.expectEqual(@as(?i64, @divTrunc(expected_ms, 1000)), try usage_api.parseResetCreditExpiry(std.testing.allocator, body, 1767225600));
+    try std.testing.expectEqual(@as(?i64, null), try usage_api.parseResetCreditExpiry(std.testing.allocator, body, 1893456000));
+    try std.testing.expectEqual(@as(?i64, null), try usage_api.parseResetCreditExpiry(std.testing.allocator, "{}", 0));
+    try std.testing.expectEqual(@as(?i64, null), try usage_api.parseResetCreditExpiry(std.testing.allocator, "{\"credits\":[]}", 0));
+}
+
+test "usage snapshot cloning and equality retain reset credit expiry" {
+    var snapshot = registry.RateLimitSnapshot{
+        .primary = null,
+        .secondary = null,
+        .credits = null,
+        .reset_credits = 3,
+        .reset_credits_expires_at = 1791150771,
+        .plan_type = .plus,
+    };
+    const cloned = try registry.cloneRateLimitSnapshot(std.testing.allocator, snapshot);
+    defer registry.freeRateLimitSnapshot(std.testing.allocator, &cloned);
+    try std.testing.expectEqual(snapshot.reset_credits_expires_at, cloned.reset_credits_expires_at);
+    try std.testing.expect(registry.rateLimitSnapshotEqual(snapshot, cloned));
+    snapshot.reset_credits_expires_at = 1791150772;
+    try std.testing.expect(!registry.rateLimitSnapshotEqual(snapshot, cloned));
+}
+
 test "parse usage api response maps live usage windows and plan" {
     const gpa = std.testing.allocator;
     const body =
