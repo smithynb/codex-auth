@@ -9,3 +9,6 @@ dist/
 
 # Local benchmarking workspace
 benchmark/*
+
+# Node modules for personal launcher
+node_modules/

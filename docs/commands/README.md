@@ -16,6 +16,7 @@ This directory documents command behavior by command. Use `codex-auth <command> 
 | `clean` | [docs/commands/clean.md](./clean.md) |
 | `config` | [docs/commands/config.md](./config.md) |
 | `app` | [docs/commands/app.md](./app.md) |
+| `poke` / `tickle` | [docs/commands/poke.md](./poke.md) *(personal)* |
 
 ## Shared Behavior
 

@@ -2,6 +2,9 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
+import os from "node:os";
+import readline from "node:readline";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +51,11 @@ if (maybePrintPreviewVersion(process.argv.slice(2))) {
 }
 
 function resolveBinary() {
+  // Keep native source customizations active when running from a personal checkout.
+  const binaryName = process.platform === "win32" ? "codex-auth.exe" : "codex-auth";
+  const localBinary = path.join(__dirname, "..", "zig-out", "bin", binaryName);
+  if (fs.existsSync(localBinary)) return localBinary;
+
   const key = `${process.platform}:${process.arch}`;
   const packageName = packageMap[key];
   if (!packageName) {
@@ -75,8 +83,81 @@ function resolveBinary() {
   }
 }
 
+// Offer a daemon restart only after an interactive account change.
+function authFingerprint() {
+  try {
+    const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    return createHash("sha256").update(fs.readFileSync(path.join(home, "auth.json"))).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+async function offerDaemonRestart() {
+  const answer = await new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    rl.on("close", () => resolve(null));
+    rl.on("SIGINT", () => rl.close());
+    rl.question("Restart Codex daemon now? [Y/n] ", (value) => {
+      resolve(value);
+      rl.close();
+    });
+  });
+  if (answer === null || !/^(y|yes)?$/i.test(answer.trim())) return;
+
+  const restart = spawnSync("codex", ["app-server", "daemon", "restart"], { stdio: "inherit" });
+  if (restart.error || restart.signal || restart.status !== 0) {
+    console.error(`Account switched, but daemon restart failed: ${restart.error?.message || restart.signal || `exit ${restart.status}`}`);
+    console.error("Retry with: codex app-server daemon restart");
+  }
+}
+
+const argv = process.argv.slice(2);
+
+// Personal commands: poke/tickle ping accounts and are handled entirely in Node.
+if (['poke', 'tickle'].includes(argv[0])) {
+  const { runPoke } = await import('./personal-poke.mjs');
+  const binaryPath = resolveBinary();
+  process.exit(await runPoke({ binaryPath, argv: argv.slice(1) }));
+}
+if (['help'].includes(argv[0]) && ['poke', 'tickle'].includes(argv[1])) {
+  const { pokeHelp } = await import('./personal-poke.mjs');
+  process.stdout.write(pokeHelp);
+  process.exit(0);
+}
+
+function personalHelpBlock() {
+  const color = process.stdout.isTTY && !('NO_COLOR' in process.env) && process.env.TERM !== 'dumb';
+  // Magenta distinguishes personal commands from the native cyan help.
+  const m = color ? "\x1b[1;35m" : ""; // bold magenta
+  const c = color ? "\x1b[35m" : "";   // magenta
+  const d = color ? "\x1b[2;35m" : ""; // dim magenta
+  const r = color ? "\x1b[0m" : "";    // reset
+  return (
+    `${m}Personal commands:${r}\n` +
+    `  ${c}poke${r} [--dry-run] [--model <name>] [--timeout <secs>]\n` +
+    `      ${d}Ping all stored ChatGPT accounts sequentially (alias: tickle)${r}\n`
+  );
+}
+
+function isTopLevelHelp(args) {
+  if (args.length === 0) return true;
+  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h' || args[0] === 'help')) return true;
+  return false;
+}
+
+const shouldOfferRestart = argv[0] === "switch"
+  && !argv.some((arg) => ["--json", "--help", "-h"].includes(arg))
+  && process.stdin.isTTY && process.stderr.isTTY;
+const previousAuth = shouldOfferRestart ? authFingerprint() : null;
 const binaryPath = resolveBinary();
-const child = spawnSync(binaryPath, process.argv.slice(2), {
+
+// Print personal commands at the top before native help.
+if (isTopLevelHelp(argv)) {
+  process.stdout.write("\n" + personalHelpBlock() + "\n");
+}
+
+const child = spawnSync(binaryPath, argv, {
   stdio: "inherit"
 });
 
@@ -88,5 +169,9 @@ if (child.error) {
 if (child.signal) {
   process.kill(process.pid, child.signal);
 } else {
+  if (child.status === 0 && shouldOfferRestart) {
+    const currentAuth = authFingerprint();
+    if (currentAuth !== null && currentAuth !== previousAuth) await offerDaemonRestart();
+  }
   process.exit(child.status ?? 1);
 }
