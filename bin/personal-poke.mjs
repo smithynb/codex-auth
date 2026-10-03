@@ -45,12 +45,14 @@ export function buildPokeInvocation(home, model, baseEnv) {
 export const pokeHelp = `Usage: codex-auth poke [--dry-run] [--model <name>] [--timeout <seconds>]
        codex-auth tickle [options]
 
-Send ping! once per stored ChatGPT account, sequentially.
+Send ping! sequentially only to ChatGPT accounts with an unstarted five-hour window.
+Checks fresh API usage, requiring an unused reset exactly five hours away to the minute.
+Other accounts print (skipped). Unavailable or stale usage is never pinged.
 Default: gpt-6-luna, low reasoning, 120-second timeout per process.
 API-key accounts are skipped. Your active account and daemon are not switched.
 Requests consume usage; OpenAI controls whether a five-hour window starts.
 
-  --dry-run          Show accounts without calling Codex or refreshing auth
+  --dry-run          Check usage and show eligible accounts without calling Codex
   --model <name>     Override the model (no automatic fallback)
   --timeout <secs>   Per-process timeout, integer from 1 to 3600
   -h, --help         Show this help
@@ -77,13 +79,36 @@ function authIdentity(bytes) {
   };
 }
 
-function runChild(command, args, { timeoutSeconds, abortSignal, ...options }) {
+export function hasUnstartedFiveHourWindow(account, nowSeconds) {
+  const usage = account?.usage;
+  if (usage?.source !== 'api' || usage.refresh?.status !== 'ok') return false;
+  const windows = [usage.primary, usage.secondary];
+  // Match the same five-hour window that the native list displays.
+  const window = windows.find(value => value?.window_minutes === 300) ?? usage.primary;
+  if (!window || (window.window_minutes != null && window.window_minutes !== 300)) return false;
+  return window.used_percent === 0
+    && Number.isSafeInteger(window.resets_at)
+    && Math.floor(window.resets_at / 60) === Math.floor((nowSeconds + 18000) / 60);
+}
+
+function runChild(command, args, { timeoutSeconds, abortSignal, captureStdout = false, ...options }) {
   if (abortSignal?.aborted) return Promise.resolve({ status: null, reason: 'cancelled' });
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      ...options, stdio: 'ignore', detached: process.platform !== 'win32',
+      ...options, stdio: captureStdout ? ['ignore', 'pipe', 'ignore'] : 'ignore',
+      detached: process.platform !== 'win32',
     });
     let reason;
+    let output = '';
+    let outputBytes = 0;
+    if (captureStdout) {
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', chunk => {
+        outputBytes += Buffer.byteLength(chunk);
+        if (outputBytes > 8 * 1024 * 1024) stop('output too large');
+        else output += chunk;
+      });
+    }
     let escalation;
     let settled = false;
     function kill(signal) {
@@ -109,7 +134,7 @@ function runChild(command, args, { timeoutSeconds, abortSignal, ...options }) {
       abortSignal?.removeEventListener('abort', aborted);
       // Also terminate descendants that outlived their process-group leader.
       kill('SIGKILL');
-      resolve({ status, reason: reason || detail });
+      resolve({ status: reason ? null : status, reason: reason || detail, stdout: output });
     }
     abortSignal?.addEventListener('abort', aborted, { once: true });
     if (abortSignal?.aborted) aborted();
@@ -118,7 +143,7 @@ function runChild(command, args, { timeoutSeconds, abortSignal, ...options }) {
   });
 }
 
-export async function runPoke({ binaryPath, argv, env = process.env, stdout = process.stdout, stderr = process.stderr }) {
+export async function runPoke({ binaryPath, argv, env = process.env, stdout = process.stdout, stderr = process.stderr, now = Date.now }) {
   let options;
   try { options = parsePokeArgs(argv); }
   catch (error) {
@@ -160,6 +185,27 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
     await fs.mkdir(exportDir, { mode: 0o700 });
     const nativeEnv = { ...env, CODEX_HOME: home };
     await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), { mode: 0o600 });
+    let eligibleAccounts;
+    try {
+      const listed = await runChild(binaryPath, ['list', '--api', '--json'], {
+        ...childOptions, env: nativeEnv, captureStdout: true,
+      });
+      if (interrupted) return interrupted;
+      if (listed.status !== 0) throw new Error('Listing failed');
+      const listing = JSON.parse(listed.stdout);
+      if (listing.schema_version !== 1 || listing.command !== 'list' || !Array.isArray(listing.accounts)) {
+        throw new Error('Invalid listing');
+      }
+      // Evaluate the snapshot once; sequential pings must not age out idle accounts.
+      const checkedAt = Math.floor(now() / 1000);
+      eligibleAccounts = new Set(listing.accounts
+        .filter(account => hasUnstartedFiveHourWindow(account, checkedAt))
+        .map(account => account.account_key));
+    } catch {
+      stderr.write('Could not check five-hour resets; no pings were sent.\n');
+      return interrupted || 1;
+    }
+    // Usage refresh can rotate credentials, so export only after the check.
     const exported = await runChild(binaryPath, ['export', exportDir], { ...childOptions, env: nativeEnv });
     if (interrupted) return interrupted;
     if (exported.status !== 0) { stderr.write('Could not export saved accounts; no pings were sent.\n'); return 1; }
@@ -173,6 +219,11 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
       try { bytes = await fs.readFile(path.join(exportDir, name)); identity = authIdentity(bytes); }
       catch { failed++; stderr.write(`Account ${index + 1}: FAILED (invalid saved auth).\n`); continue; }
       if (!identity) { skipped++; stdout.write(`Account ${index + 1}: SKIPPED (API-key account).\n`); continue; }
+      if (!eligibleAccounts.has(identity.key)) {
+        skipped++;
+        stdout.write(`${identity.label}: (skipped)\n`);
+        continue;
+      }
       if (options.dryRun) { skipped++; stdout.write(`${identity.label}: would send ping!\n`); continue; }
       const accountHome = path.join(staging, `account-${index}`);
       await fs.mkdir(accountHome, { mode: 0o700 });

@@ -13,7 +13,9 @@ when `NO_COLOR` is set).
 
 ## Behavior
 
-- Sends `ping!` once per stored ChatGPT account, sequentially.
+- Checks fresh API usage, then sends `ping!` sequentially only to stored ChatGPT accounts with an unstarted five-hour window.
+- A window is eligible when usage is zero and its reset is exactly five hours away, compared to the minute. Accounts with active windows, stale usage, or failed usage refreshes print `(skipped)`.
+- If the usage check fails entirely, no pings are sent.
 - Default model: `gpt-6-luna`; reasoning effort: `low`.
 - Each account receives an isolated, ephemeral, read-only Codex session.
 - Your active account, daemon, and user configuration are not switched or loaded.
@@ -25,7 +27,7 @@ when `NO_COLOR` is set).
 
 | Option | Description |
 |--------|-------------|
-| `--dry-run` | Show which accounts would be pinged; no Codex calls or auth refreshes |
+| `--dry-run` | Refresh API usage and show eligible accounts without sending pings; the refresh may update saved authentication tokens |
 | `--model <name>` | Override the model (no fallback if unavailable) |
 | `--timeout <secs>` | Per-process timeout; integer 1–3600 (default 120) |
 | `-h`, `--help` | Show help |

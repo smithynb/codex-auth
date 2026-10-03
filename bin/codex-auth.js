@@ -136,7 +136,7 @@ function personalHelpBlock() {
   return (
     `${m}Personal commands:${r}\n` +
     `  ${c}poke${r} [--dry-run] [--model <name>] [--timeout <secs>]\n` +
-    `      ${d}Ping all stored ChatGPT accounts sequentially (alias: tickle)${r}\n`
+    `      ${d}Ping unstarted five-hour windows; skip active ones (alias: tickle)${r}\n`
   );
 }
 

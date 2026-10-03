@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parsePokeArgs, buildPokeInvocation, runPoke } from '../bin/personal-poke.mjs';
+import { parsePokeArgs, buildPokeInvocation, hasUnstartedFiveHourWindow, runPoke } from '../bin/personal-poke.mjs';
 
 test('defaults match the requested ping', () => {
   assert.deepEqual(parsePokeArgs([]), {
@@ -44,6 +44,37 @@ test('request is isolated from ambient API keys and user configuration', () => {
   assert.equal(invocation.cwd, '/tmp/private-fixture/work');
 });
 
+test('five-hour eligibility is exact to the displayed minute, not rounded hours or percent', () => {
+  const now = 1800000025;
+  const idle = { used_percent: 0, window_minutes: 300, resets_at: now + 18000 };
+  const account = primary => ({ usage: {
+    source: 'api', refresh: { status: 'ok' }, primary,
+  } });
+  const minuteStart = Math.floor((now + 18000) / 60) * 60;
+  for (const resets_at of [minuteStart, minuteStart + 59, now + 18000]) {
+    assert.equal(hasUnstartedFiveHourWindow(account({ ...idle, resets_at }), now), true);
+  }
+  for (const resets_at of [minuteStart - 1, minuteStart + 60, now + 17900, now + 3600,
+    now - 1, null, '1800018025']) {
+    assert.equal(hasUnstartedFiveHourWindow(account({ ...idle, resets_at }), now), false);
+  }
+  for (const used_percent of [0.01, 1, 100, null]) {
+    assert.equal(hasUnstartedFiveHourWindow(account({ ...idle, used_percent }), now), false);
+  }
+  assert.equal(hasUnstartedFiveHourWindow(account({ ...idle, window_minutes: 10080 }), now), false);
+  assert.equal(hasUnstartedFiveHourWindow(account({ ...idle, window_minutes: null }), now), true);
+  assert.equal(hasUnstartedFiveHourWindow(account(null), now), false);
+  assert.equal(hasUnstartedFiveHourWindow(null, now), false);
+  for (const usage of [
+    { ...account(idle).usage, source: 'cache' },
+    { ...account(idle).usage, refresh: { status: 'http_error' } },
+    { ...account(idle).usage, refresh: null },
+  ]) assert.equal(hasUnstartedFiveHourWindow({ usage }, now), false);
+  assert.equal(hasUnstartedFiveHourWindow({ usage: {
+    ...account({ ...idle, window_minutes: 10080 }).usage, secondary: idle,
+  } }, now), true);
+});
+
 function fixtureAuth(id, changes = {}) {
   const claims = { email: `${id}@example.invalid`, 'https://api.openai.com/auth': {
     chatgpt_user_id: 'fixture-user', chatgpt_account_id: id,
@@ -72,7 +103,8 @@ async function makeHarness(t, options = {}) {
   }
   const config = path.join(root, 'config.json');
   const log = path.join(root, 'calls.jsonl');
-  await fs.writeFile(config, JSON.stringify(options));
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  await fs.writeFile(config, JSON.stringify({ ...options, nowSeconds }));
   const preamble = `#!${process.execPath}
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,7 +116,19 @@ const log = (record) => fs.appendFileSync(process.env.POKE_FIXTURE_LOG, JSON.str
   await fs.writeFile(native, preamble + `
 const [command, destination] = process.argv.slice(2);
 log({type: command, home: process.env.CODEX_HOME, destination});
-if (command === 'export') {
+if (command === 'list') {
+  if (config.listFail) { console.error('fixture-refresh-a'); process.exit(9); }
+  if (config.listInvalid) { console.log('invalid-json'); process.exit(0); }
+  const now = config.nowSeconds;
+  const accounts = config.accounts ?? { a: {}, b: {} };
+  console.log(JSON.stringify({ schema_version: 1, command: 'list', accounts:
+    Object.keys(accounts).map(id => ({ account_key: 'fixture-user::' + id, usage: {
+      source: 'api', refresh: { requested: true, status: 'ok', method: 'api' },
+      primary: { used_percent: 0, window_minutes: 300, resets_at: now + 18000 },
+      ...config.usage?.[id],
+    } })).filter(a => !config.missingUsage?.includes(a.account_key.split('::')[1]))
+  }));
+} else if (command === 'export') {
   if (config.exportFail) { console.error('fixture-refresh-a'); process.exit(9); }
   fs.mkdirSync(destination, {recursive: true});
   for (const name of fs.readdirSync(path.join(source, 'accounts')).filter(n => n.endsWith('.auth.json'))) {
@@ -144,7 +188,8 @@ process.exit(behavior.fail ? 7 : 0);
   async function run(argv = []) {
     let output = '';
     const stream = { write(value) { output += value; } };
-    const status = await runPoke({ binaryPath: native, argv, env, stdout: stream, stderr: stream });
+    const status = await runPoke({ binaryPath: native, argv, env, stdout: stream, stderr: stream,
+      now: () => nowSeconds * 1000 });
     assert.ok(!/fixture-(access|refresh|renewed|api-key)/.test(output), output);
     return { status, output, calls: await calls() };
   }
@@ -201,16 +246,61 @@ test('dry run has no Codex requests or refreshed-auth imports', async t => {
   const h = await makeHarness(t);
   const result = await h.run(['--dry-run']);
   assert.equal(result.status, 0);
-  assert.deepEqual(result.calls.map(c => c.type), ['export']);
+  assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
   assert.match(result.output, /would send ping!/);
   await h.unchanged();
+});
+
+test('only pings unstarted windows and prints (skipped) for active or unverified accounts', async t => {
+  const h = await makeHarness(t, { accounts: {
+    a: fixtureAuth('a'), b: fixtureAuth('b'), c: fixtureAuth('c'), d: fixtureAuth('d'),
+    e: fixtureAuth('e'), f: fixtureAuth('f'),
+  }, usage: {
+    a: { primary: { used_percent: 0, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 17800 } },
+    c: { source: 'cache', refresh: { requested: true, status: 'http_error', method: 'api' } },
+    d: { primary: null },
+    e: { primary: { used_percent: 1, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 18000 } },
+  }, missingUsage: ['f'] });
+  const result = await h.run();
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(result.calls.filter(c => c.type === 'exec').map(c => c.id), ['b']);
+  for (const id of ['a', 'c', 'd', 'e', 'f']) {
+    assert.ok(result.output.includes(`${id}@example.invalid (${id}): (skipped)\n`), result.output);
+  }
+  assert.match(result.output, /1 succeeded, 0 failed, 5 skipped/);
+  assert.deepEqual(result.calls[0], { type: 'list', home: h.home, destination: '--api' });
+  await h.unchanged();
+});
+
+test('dry run also filters active windows without model requests', async t => {
+  const h = await makeHarness(t, { usage: {
+    a: { primary: { used_percent: 0, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 9000 } },
+  } });
+  const result = await h.run(['--dry-run']);
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
+  assert.ok(result.output.includes('a@example.invalid (a): (skipped)\n'));
+  assert.ok(!result.output.includes('a@example.invalid (a): would send ping!'));
+  assert.ok(result.output.includes('b@example.invalid (b): would send ping!'));
+  await h.unchanged();
+});
+
+test('failed or malformed usage listing stops before any model request', async t => {
+  for (const options of [{ listFail: true }, { listInvalid: true }]) {
+    const h = await makeHarness(t, options);
+    const result = await h.run();
+    assert.equal(result.status, 1, result.output);
+    assert.deepEqual(result.calls.map(c => c.type), ['list']);
+    assert.match(result.output, /Could not check five-hour resets; no pings were sent/);
+    await h.unchanged();
+  }
 });
 
 test('export failure stops before any model request and hides child diagnostics', async t => {
   const h = await makeHarness(t, { exportFail: true });
   const result = await h.run();
   assert.equal(result.status, 1);
-  assert.deepEqual(result.calls.map(c => c.type), ['export']);
+  assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
   await h.unchanged();
 });
 
