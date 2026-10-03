@@ -70,7 +70,7 @@ pub fn buildDisplayRows(
             continue;
         }
 
-        const header_cell = try allocator.dupe(u8, email);
+        const header_cell = try redactEmailAlloc(allocator, email);
         row_list.append(allocator, .{
             .account_index = null,
             .account_cell = header_cell,
@@ -222,17 +222,43 @@ pub fn buildAccountIdentityLabelAlloc(
 ) ![]u8 {
     const alias = if (rec.alias.len != 0) rec.alias else null;
     const account_name = normalizedAccountName(rec);
+    const email = try redactEmailAlloc(allocator, rec.email);
+    defer allocator.free(email);
 
     if (alias != null and account_name != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s}, {s})", .{ alias.?, account_name.?, rec.email });
+        return std.fmt.allocPrint(allocator, "{s}({s}, {s})", .{ alias.?, account_name.?, email });
     }
     if (alias != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s})", .{ alias.?, rec.email });
+        return std.fmt.allocPrint(allocator, "{s}({s})", .{ alias.?, email });
     }
     if (account_name != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s})", .{ account_name.?, rec.email });
+        return std.fmt.allocPrint(allocator, "{s}({s})", .{ account_name.?, email });
     }
-    return allocator.dupe(u8, rec.email);
+    return allocator.dupe(u8, email);
+}
+
+pub fn redactEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
+    const at = std.mem.indexOfScalar(u8, email, '@') orelse return allocator.dupe(u8, email);
+    const local = email[0..at];
+    const domain = email[at + 1 ..];
+    if (local.len == 0 or domain.len == 0) return allocator.dupe(u8, "***@***");
+    const suffix_start = std.mem.lastIndexOfScalar(u8, domain, '.') orelse domain.len;
+    const suffix = if (suffix_start > 0 and suffix_start + 1 < domain.len) domain[suffix_start..] else "";
+    return std.fmt.allocPrint(allocator, "{s}***@{s}***{s}", .{
+        characterPrefix(local, 3), characterPrefix(domain[0..suffix_start], 1), suffix,
+    });
+}
+
+fn characterPrefix(value: []const u8, count: usize) []const u8 {
+    var end: usize = 0;
+    var characters: usize = 0;
+    while (end < value.len) : (end += 1) {
+        if (value[end] & 0xc0 != 0x80) {
+            if (characters == count) break;
+            characters += 1;
+        }
+    }
+    return value[0..end];
 }
 
 fn normalizedAccountName(rec: *const registry.AccountRecord) ?[]const u8 {

@@ -1107,7 +1107,7 @@ test "Scenario: Given a standalone team account when building display rows and r
     var rows = try display_rows.buildDisplayRows(gpa, &reg, null);
     defer rows.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 1), rows.rows.len);
-    try std.testing.expect(std.mem.eql(u8, rows.rows[0].account_cell, "solo-team@example.com"));
+    try std.testing.expect(std.mem.eql(u8, rows.rows[0].account_cell, "sol***@e***.com"));
     try std.testing.expect(!registry.shouldFetchWorkspaceAccountNamesForUser(&reg, standalone_team_user_id));
 
     var info = try parseAuthInfoWithIds(gpa, "solo-team@example.com", "team", standalone_team_user_id, standalone_team_account_id);

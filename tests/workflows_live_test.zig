@@ -390,7 +390,7 @@ test "switch live action patches the current display after switching" {
         owned_display.deinit(gpa);
     }
 
-    try std.testing.expectEqualStrings("Switched to Registry Beta(beta@example.com)", outcome.action_message.?);
+    try std.testing.expectEqualStrings("Switched to Registry Beta(bet***@e***.com)", outcome.action_message.?);
     try std.testing.expectEqualStrings(beta_key, outcome.updated_display.reg.active_account_key.?);
     try std.testing.expectEqual(@as(usize, 2), outcome.updated_display.reg.accounts.items.len);
     try std.testing.expectEqualStrings("Registry Beta", outcome.updated_display.reg.accounts.items[beta_idx].account_name.?);
@@ -489,7 +489,7 @@ test "switch live action does not wait for an in-flight refresh" {
     }
 
     try std.testing.expect(elapsed_ms < 500);
-    try std.testing.expectEqualStrings("Switched to beta@example.com", outcome.action_message.?);
+    try std.testing.expectEqualStrings("Switched to bet***@e***.com", outcome.action_message.?);
     try std.testing.expectEqual(@as(u64, 1), runtime.display_generation);
 }
 
@@ -583,7 +583,7 @@ test "remove live action patches the current display after deleting the active a
         owned_display.deinit(gpa);
     }
 
-    try std.testing.expectEqualStrings("Removed 1 account(s): Registry Alpha(alpha@example.com)", outcome.action_message.?);
+    try std.testing.expectEqualStrings("Removed 1 account(s): Registry Alpha(alp***@e***.com)", outcome.action_message.?);
     try std.testing.expectEqual(@as(usize, 1), outcome.updated_display.reg.accounts.items.len);
     try std.testing.expect(findAccountIndexByAccountKeyConst(&outcome.updated_display.reg, alpha_key) == null);
     try std.testing.expectEqualStrings(beta_key, outcome.updated_display.reg.active_account_key.?);
@@ -686,7 +686,7 @@ test "remove live action does not wait for an in-flight refresh" {
     }
 
     try std.testing.expect(elapsed_ms < 500);
-    try std.testing.expectEqualStrings("Removed 1 account(s): beta@example.com", outcome.action_message.?);
+    try std.testing.expectEqualStrings("Removed 1 account(s): bet***@e***.com", outcome.action_message.?);
     try std.testing.expectEqual(@as(u64, 1), runtime.display_generation);
 }
 

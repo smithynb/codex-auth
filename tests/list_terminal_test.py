@@ -88,7 +88,7 @@ class ListTerminalTest(unittest.TestCase):
                 rows = lines[2:]
                 self.assertEqual(len(rows), 2)
                 for index, row in enumerate(rows):
-                    self.assertEqual(header.index("ACCOUNT"), row.index(f"user{index}@"))
+                    self.assertEqual(header.index("ACCOUNT"), row.index("use***@e***.com"))
                     self.assertEqual(header.index("5H"), row.index(f"{90-index}%"))
                     self.assertEqual(header.index("WEEKLY"), row.index(f"{80-index}%"))
 
@@ -98,6 +98,22 @@ class ListTerminalTest(unittest.TestCase):
         self.assertNotIn(b"\x1b", result.stdout)
         self.assertNotIn(b"\r", result.stdout)
         self.assertTrue(result.stdout.startswith(b"     ACCOUNT"))
+
+    def test_list_and_cancelled_switch_mask_emails_without_changing_registry(self):
+        registry = Path(self.home.name) / "accounts" / "registry.json"
+        before = json.loads(registry.read_text())
+        for command in ["list", "switch"]:
+            with self.subTest(command=command):
+                result = subprocess.run(["node", str(CLI), command, "--skip-api"],
+                                        input=b"q\n", capture_output=True, env=self.env,
+                                        check=True, timeout=10)
+                self.assertIn(b"use***@e***.com", result.stdout)
+                self.assertNotIn(b"user0@example.com", result.stdout)
+                self.assertNotIn(b"user1@example.com", result.stdout)
+        after = json.loads(registry.read_text())
+        self.assertEqual(before["active_account_key"], after["active_account_key"])
+        self.assertEqual([a["email"] for a in before["accounts"]],
+                         [a["email"] for a in after["accounts"]])
 
 
 if __name__ == "__main__":
