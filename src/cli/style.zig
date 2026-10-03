@@ -7,6 +7,7 @@ pub const ansi = struct {
     pub const red = "\x1b[31m";
     pub const green = "\x1b[32m";
     pub const cyan = "\x1b[36m";
+    pub const bright_cyan = "\x1b[96m";
 };
 
 pub const role = struct {

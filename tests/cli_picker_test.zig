@@ -35,6 +35,7 @@ const ansi = struct {
     const red = "\x1b[31m";
     const green = "\x1b[32m";
     const cyan = "\x1b[36m";
+    const bright_cyan = "\x1b[96m";
 };
 
 fn renderListScreenViewport(
@@ -1202,10 +1203,24 @@ test "Scenario: Given switch list color output when rendering then header cursor
 
     const output = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, ansi.cyan ++ "     ACCOUNT") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, ansi.green ++ "> 01 cursor@example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, ansi.bright_cyan ++ "> 01 cursor@example.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ansi.green ++ "* 02 active@example.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "  03 normal@example.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[2m  03 normal@example.com") == null);
+
+    var active_buffer: [2048]u8 = undefined;
+    var active_writer: std.Io.Writer = .fixed(&active_buffer);
+    try renderSwitchList(&active_writer, &reg, &rows, 2, .{
+        .email = 20,
+        .plan = 4,
+        .rate_5h = 2,
+        .rate_week = 6,
+        .last = 4,
+    }, 1, true);
+    const active_output = active_writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, active_output, ansi.bright_cyan ++ "> 02 active@example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, active_output, ansi.green ++ "> 02 active@example.com") == null);
+    try std.testing.expect(std.mem.indexOf(u8, active_output, "* 02 active@example.com") == null);
 }
 
 test "Scenario: Given an active account when rendering remove list then non-cursor active rows use the list marker" {
@@ -1321,7 +1336,7 @@ test "Scenario: Given overlapping row states when rendering live lists then colo
         .last = 4,
     }, 0, true);
     const switch_output = switch_writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, switch_output, ansi.green ++ "> 01 cursor-error@example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, switch_output, ansi.bright_cyan ++ "> 01 cursor-error@example.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, switch_output, ansi.green ++ "* 02 active-error@example.com") != null);
 
     var remove_rows = [_]SwitchRow{

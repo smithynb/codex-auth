@@ -340,8 +340,8 @@ fn liveAccountCells(row: SwitchRow) [table_layout.column_count]table_layout.Cell
 }
 
 fn switchRowStyle(row: SwitchRow, is_cursor: bool, is_active: bool) []const u8 {
+    if (is_cursor) return style.ansi.bright_cyan;
     if (is_active) return style.ansi.green;
-    if (is_cursor) return style.ansi.green;
     if (row.has_error) return style.ansi.red;
     return "";
 }
