@@ -75,8 +75,8 @@ test('five-hour eligibility is exact to the displayed minute, not rounded hours 
   } }, now), true);
 });
 
-function fixtureAuth(id, changes = {}) {
-  const claims = { email: `${id}@example.invalid`, 'https://api.openai.com/auth': {
+function fixtureAuth(id, changes = {}, email = `${id}@example.invalid`) {
+  const claims = { email, 'https://api.openai.com/auth': {
     chatgpt_user_id: 'fixture-user', chatgpt_account_id: id,
   } };
   return { auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: {
@@ -191,6 +191,7 @@ process.exit(behavior.fail ? 7 : 0);
     const status = await runPoke({ binaryPath: native, argv, env, stdout: stream, stderr: stream,
       now: () => nowSeconds * 1000 });
     assert.ok(!/fixture-(access|refresh|renewed|api-key)/.test(output), output);
+    assert.ok(!output.includes('@example.invalid'), output);
     return { status, output, calls: await calls() };
   }
   async function launcher() {
@@ -251,6 +252,52 @@ test('dry run has no Codex requests or refreshed-auth imports', async t => {
   await h.unchanged();
 });
 
+test('status labels mask email identity and domain without changing stored auth', async t => {
+  const cases = [
+    ['benny@gmail.com', 'ben***@g***.com'],
+    ['student@oregonstate.edu', 'stu***@o***.edu'],
+    ['longname@dept.school.edu', 'lon***@d***.edu'],
+    ['a@b.co.uk', 'a***@b***.uk'],
+    ['ab@localhost', 'ab***@l***'],
+    ['éééé@école.edu', 'ééé***@é***.edu'],
+    ['"private user"@example.com', '"pri***"@e***.com'],
+    ['"private@user"@example.com', '"pri***"@e***.com'],
+    ['private@[192.0.2.1]', 'pri***@[***]'],
+    ['private@[IPv6:2001:db8::1]', 'pri***@[***]'],
+    ['@example.com', '***@***'],
+    ['user@', '***@***'],
+  ];
+  const accounts = Object.fromEntries(cases.map(([email], index) => {
+    const id = `account-${index}`;
+    return [id, fixtureAuth(id, {}, email)];
+  }));
+  const h = await makeHarness(t, { accounts });
+  const result = await h.run(['--dry-run']);
+  assert.equal(result.status, 0, result.output);
+  for (const [index, [email, masked]] of cases.entries()) {
+    assert.ok(!result.output.includes(email), result.output);
+    assert.ok(result.output.includes(`${masked} (account-${index}): would send ping!\n`), result.output);
+    const saved = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', `account-${index}.auth.json`), 'utf8'));
+    assert.deepEqual(saved, accounts[`account-${index}`]);
+  }
+  await h.unchanged();
+});
+
+test('rejects missing or non-string access tokens before requesting a model', async t => {
+  const invalidObject = fixtureAuth('a');
+  invalidObject.tokens.access_token = { token: 'fixture-access-a' };
+  const invalidEmpty = fixtureAuth('b');
+  invalidEmpty.tokens.access_token = '';
+  const h = await makeHarness(t, { accounts: {
+    a: invalidObject, b: invalidEmpty, c: fixtureAuth('c'),
+  } });
+  const result = await h.run();
+  assert.equal(result.status, 1, result.output);
+  assert.deepEqual(result.calls.filter(c => c.type === 'exec').map(c => c.id), ['c']);
+  assert.match(result.output, /1 succeeded, 2 failed, 0 skipped/);
+  await h.unchanged();
+});
+
 test('only pings unstarted windows and prints (skipped) for active or unverified accounts', async t => {
   const h = await makeHarness(t, { accounts: {
     a: fixtureAuth('a'), b: fixtureAuth('b'), c: fixtureAuth('c'), d: fixtureAuth('d'),
@@ -265,7 +312,7 @@ test('only pings unstarted windows and prints (skipped) for active or unverified
   assert.equal(result.status, 0, result.output);
   assert.deepEqual(result.calls.filter(c => c.type === 'exec').map(c => c.id), ['b']);
   for (const id of ['a', 'c', 'd', 'e', 'f']) {
-    assert.ok(result.output.includes(`${id}@example.invalid (${id}): (skipped)\n`), result.output);
+    assert.ok(result.output.includes(`${id}***@e***.invalid (${id}): (skipped)\n`), result.output);
   }
   assert.match(result.output, /1 succeeded, 0 failed, 5 skipped/);
   assert.deepEqual(result.calls[0], { type: 'list', home: h.home, destination: '--api' });
@@ -279,9 +326,9 @@ test('dry run also filters active windows without model requests', async t => {
   const result = await h.run(['--dry-run']);
   assert.equal(result.status, 0, result.output);
   assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
-  assert.ok(result.output.includes('a@example.invalid (a): (skipped)\n'));
-  assert.ok(!result.output.includes('a@example.invalid (a): would send ping!'));
-  assert.ok(result.output.includes('b@example.invalid (b): would send ping!'));
+  assert.ok(result.output.includes('a***@e***.invalid (a): (skipped)\n'));
+  assert.ok(!result.output.includes('a***@e***.invalid (a): would send ping!'));
+  assert.ok(result.output.includes('b***@e***.invalid (b): would send ping!'));
   await h.unchanged();
 });
 

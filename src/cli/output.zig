@@ -7,6 +7,7 @@ const types = @import("types.zig");
 const help = @import("help.zig");
 const style = @import("style.zig");
 const io = @import("io.zig");
+const redact = @import("../core/redact.zig");
 
 const UsageError = types.UsageError;
 
@@ -95,7 +96,8 @@ pub fn writeImportReportWithColor(
             if (event.outcome == .skipped) {
                 try item_out.print("   {s}", .{event.reason.?});
             } else if (event.detail) |detail| {
-                try item_out.print("  {s}", .{detail});
+                try item_out.writeAll("  ");
+                try redact.writeRedactedEmail(item_out, detail);
             }
             try item_out.writeAll("\n");
             if (item_color) try item_out.writeAll(style.ansi.reset);
@@ -166,7 +168,9 @@ pub fn printAccountNotFoundError(query: []const u8) !void {
     const out = stderr.out();
     const use_color = stderr.color_enabled;
     try writeErrorPrefixTo(out, use_color);
-    try out.print(" no account matches '{s}'.\n", .{query});
+    try out.writeAll(" no account matches '");
+    try redact.writeRedactedText(out, query);
+    try out.writeAll("'.\n");
     try writeHintPrefixTo(out, use_color);
     try out.writeAll(" Remove accepts one or more aliases, emails, display numbers, or partial queries.\n");
     try out.flush();
@@ -178,7 +182,9 @@ pub fn printSwitchAccountNotFoundError(query: []const u8) !void {
     const out = stderr.out();
     const use_color = stderr.color_enabled;
     try writeErrorPrefixTo(out, use_color);
-    try out.print(" no switch target matches '{s}'.\n", .{query});
+    try out.writeAll(" no switch target matches '");
+    try redact.writeRedactedText(out, query);
+    try out.writeAll("'.\n");
     try writeHintPrefixTo(out, use_color);
     try out.writeAll(" Switch accepts one target: alias, email, display number, or partial query.\n");
     try out.flush();
@@ -210,7 +216,9 @@ pub fn printAliasAccountNotFoundError(query: []const u8) !void {
     const out = stderr.out();
     const use_color = stderr.color_enabled;
     try writeErrorPrefixTo(out, use_color);
-    try out.print(" no alias target matches '{s}'.\n", .{query});
+    try out.writeAll(" no alias target matches '");
+    try redact.writeRedactedText(out, query);
+    try out.writeAll("'.\n");
     try writeHintPrefixTo(out, use_color);
     try out.writeAll(" Alias targets accept one account: alias, email, display number, or partial query.\n");
     try out.flush();
@@ -230,7 +238,7 @@ pub fn printAccountNotFoundErrors(queries: []const []const u8) !void {
     try out.writeAll(" no account matches: ");
     for (queries, 0..) |query, idx| {
         if (idx != 0) try out.writeAll(", ");
-        try out.writeAll(query);
+        try redact.writeRedactedText(out, query);
     }
     try out.writeAll(".\n");
     try writeHintPrefixTo(out, use_color);
@@ -302,7 +310,11 @@ pub fn printDuplicateAliasError(alias_value: []const u8, email: []const u8) !voi
     const out = stderr.out();
     const use_color = stderr.color_enabled;
     try writeErrorPrefixTo(out, use_color);
-    try out.print(" alias '{s}' is already used by {s}.\n", .{ alias_value, email });
+    try out.writeAll(" alias '");
+    try redact.writeRedactedText(out, alias_value);
+    try out.writeAll("' is already used by ");
+    try redact.writeRedactedEmail(out, email);
+    try out.writeAll(".\n");
     try out.flush();
 }
 
@@ -311,12 +323,20 @@ pub fn printAliasSet(rec: *const registry.AccountRecord, old_alias: []const u8) 
     stdout.init();
     const out = stdout.out();
     if (old_alias.len == 0) {
-        try out.print("Set alias for {s}: {s}\n", .{ rec.email, rec.alias });
+        try out.writeAll("Set alias for ");
     } else if (std.mem.eql(u8, old_alias, rec.alias)) {
-        try out.print("Alias already set for {s}: {s}\n", .{ rec.email, rec.alias });
+        try out.writeAll("Alias already set for ");
     } else {
-        try out.print("Updated alias for {s}: {s} -> {s}\n", .{ rec.email, old_alias, rec.alias });
+        try out.writeAll("Updated alias for ");
     }
+    try redact.writeRedactedEmail(out, rec.email);
+    try out.writeAll(": ");
+    if (old_alias.len != 0 and !std.mem.eql(u8, old_alias, rec.alias)) {
+        try redact.writeRedactedText(out, old_alias);
+        try out.writeAll(" -> ");
+    }
+    try redact.writeRedactedText(out, rec.alias);
+    try out.writeAll("\n");
     try out.flush();
 }
 
@@ -325,9 +345,15 @@ pub fn printAliasCleared(rec: *const registry.AccountRecord, old_alias: []const 
     stdout.init();
     const out = stdout.out();
     if (old_alias.len == 0) {
-        try out.print("Alias already empty for {s}.\n", .{rec.email});
+        try out.writeAll("Alias already empty for ");
+        try redact.writeRedactedEmail(out, rec.email);
+        try out.writeAll(".\n");
     } else {
-        try out.print("Cleared alias for {s}: {s}\n", .{ rec.email, old_alias });
+        try out.writeAll("Cleared alias for ");
+        try redact.writeRedactedEmail(out, rec.email);
+        try out.writeAll(": ");
+        try redact.writeRedactedText(out, old_alias);
+        try out.writeAll("\n");
     }
     try out.flush();
 }

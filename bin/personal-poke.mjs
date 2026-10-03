@@ -58,13 +58,30 @@ Requests consume usage; OpenAI controls whether a five-hour window starts.
   -h, --help         Show this help
 `;
 
+function maskEmail(value) {
+  const at = value.lastIndexOf('@');
+  if (at === -1) return value;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (!local || !domain) return '***@***';
+  const quoted = local.startsWith('"') && local.endsWith('"') && local.length >= 2;
+  const localValue = quoted ? local.slice(1, -1) : local;
+  const quote = quoted ? '"' : '';
+  const dot = domain.lastIndexOf('.');
+  const literal = domain.startsWith('[') && domain.endsWith(']');
+  const suffix = literal ? ']' : dot > 0 && dot < domain.length - 1 ? domain.slice(dot) : '';
+  const domainPrefix = Array.from(dot === -1 ? domain : domain.slice(0, dot))[0] ?? '';
+  return `${quote}${Array.from(localValue).slice(0, 3).join('')}***${quote}@${domainPrefix}***${suffix}`;
+}
+
 function authIdentity(bytes) {
   const auth = JSON.parse(bytes.toString());
   if (auth.auth_mode === 'apikey' || (typeof auth.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY.trim())) {
     return null;
   }
   const tokens = auth.tokens;
-  if (!tokens || typeof tokens.id_token !== 'string' || !tokens.access_token) throw new Error('Invalid auth');
+  if (!tokens || typeof tokens.id_token !== 'string'
+    || typeof tokens.access_token !== 'string' || !tokens.access_token) throw new Error('Invalid auth');
   const parts = tokens.id_token.split('.');
   if (parts.length !== 3) throw new Error('Invalid auth');
   const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
@@ -72,7 +89,7 @@ function authIdentity(bytes) {
   const user = accountClaims?.chatgpt_user_id ?? accountClaims?.user_id;
   const account = tokens.account_id || accountClaims?.chatgpt_account_id;
   if (typeof user !== 'string' || !user || typeof account !== 'string' || !account) throw new Error('Invalid auth');
-  const label = typeof claims.email === 'string' ? claims.email : user;
+  const label = typeof claims.email === 'string' ? maskEmail(claims.email) : user;
   return {
     key: `${user}::${account}`,
     label: `${label} (${account})`.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 160),

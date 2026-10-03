@@ -1,8 +1,6 @@
 const std = @import("std");
 const app_runtime = @import("../core/runtime.zig");
-const builtin = @import("builtin");
 const me_api = @import("../api/me.zig");
-const account_api = @import("../api/account.zig");
 const common = @import("common.zig");
 const clean = @import("clean.zig");
 const account_ops = @import("account_ops.zig");
@@ -82,16 +80,7 @@ pub const writeFile = common.writeFile;
 pub const max_backups = common.max_backups;
 
 pub const CleanSummary = clean.CleanSummary;
-const fileExists = clean.fileExists;
-const readFileIfExists = clean.readFileIfExists;
-const filesEqual = clean.filesEqual;
-const fileEqualsBytes = clean.fileEqualsBytes;
-const backupDir = clean.backupDir;
-const makeBackupPath = clean.makeBackupPath;
-const pruneBackups = clean.pruneBackups;
-const resolveStrictAccountAuthPath = clean.resolveStrictAccountAuthPath;
 pub const backupAuthIfChanged = clean.backupAuthIfChanged;
-const backupRegistryIfChanged = clean.backupRegistryIfChanged;
 
 pub fn cleanAccountsBackups(allocator: std.mem.Allocator, codex_home: []const u8) !CleanSummary {
     return clean.cleanAccountsBackupsWithLoader(allocator, codex_home, loadRegistry);
@@ -107,13 +96,6 @@ pub fn purgeRegistryFromImportSource(allocator: std.mem.Allocator, codex_home: [
 }
 pub const importCpaPath = import_mod.importCpaPath;
 pub const importAuthPath = import_mod.importAuthPath;
-const importCpaFile = import_mod.importCpaFile;
-const importConvertedAuthInfo = import_mod.importConvertedAuthInfo;
-const importAuthFile = import_mod.importAuthFile;
-const importAuthInfo = import_mod.importAuthInfo;
-const importAccountsSnapshotDirectory = import_mod.importAccountsSnapshotDirectory;
-const sortAccountsByEmail = import_mod.sortAccountsByEmail;
-const syncCurrentAuthBestEffort = import_mod.syncCurrentAuthBestEffort;
 
 pub const ExportSummary = export_mod.ExportSummary;
 pub const defaultExportDirectory = export_mod.defaultExportDirectory;
@@ -143,11 +125,8 @@ pub const accountFromApiKeyMe = account_ops.accountFromApiKeyMe;
 pub const apiKeyAccountKeyAlloc = account_ops.apiKeyAccountKeyAlloc;
 pub const apiKeyAccountNameAlloc = account_ops.apiKeyAccountNameAlloc;
 pub const upsertAccount = account_ops.upsertAccount;
-const syncActiveAccountFromAuthWithImporter = account_ops.syncActiveAccountFromAuthWithImporter;
-
 pub const loadRegistry = storage.loadRegistry;
 pub const saveRegistry = storage.saveRegistry;
-const defaultRegistry = storage.defaultRegistry;
 
 pub fn autoImportActiveAuth(allocator: std.mem.Allocator, codex_home: []const u8, reg: *Registry) !bool {
     if (reg.accounts.items.len != 0) return false;

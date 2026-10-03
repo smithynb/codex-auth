@@ -59,3 +59,19 @@ jobs:
         run: |
           zig version
           zig build test -j1
+
+      - name: Setup Node for launcher tests
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          package-manager-cache: false
+
+      - name: Launcher and terminal regressions
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          zig build
+          node --test tests/personal_poke_test.mjs
+          python3 tests/personal_restart_test.py
+          python3 tests/personal_help_test.py
+          python3 tests/list_terminal_test.py

@@ -408,14 +408,15 @@ fn buildUsageWarnings(
         if (!outcome.attempted) continue;
         if (outcome.error_name == null) continue;
         if (idx >= reg.accounts.items.len) continue;
-        try warnings.append(
+        const email = try display_rows.redactEmailAlloc(allocator, reg.accounts.items[idx].email);
+        defer allocator.free(email);
+        const warning = try std.fmt.allocPrint(
             allocator,
-            try std.fmt.allocPrint(
-                allocator,
-                "usage refresh failed for {s}: {s}",
-                .{ reg.accounts.items[idx].email, outcome.error_name.? },
-            ),
+            "usage refresh failed for {s}: {s}",
+            .{ email, outcome.error_name.? },
         );
+        errdefer allocator.free(warning);
+        try warnings.append(allocator, warning);
     }
 
     return try warnings.toOwnedSlice(allocator);

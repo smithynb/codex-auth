@@ -34,3 +34,6 @@ If one account matches, the command updates that account immediately. If multipl
 `codex-auth alias clear <query>` removes the stored alias for the matched account.
 
 If the alias is already empty, the command reports that state and leaves the registry unchanged.
+
+Status messages and errors mask account emails, including emails embedded in aliases.
+Stored aliases and email selectors keep their original values.

@@ -1,13 +1,6 @@
 const std = @import("std");
-const app_runtime = @import("../core/runtime.zig");
-const account_api = @import("../api/account.zig");
 const cli = @import("../cli/root.zig");
-const chatgpt_http = @import("../api/http.zig");
-const display_rows = @import("../tui/display.zig");
 const registry = @import("../registry/root.zig");
-const auth = @import("../auth/auth.zig");
-const format = @import("../tui/table.zig");
-const usage_api = @import("../api/usage.zig");
 const account_names = @import("account_names.zig");
 const active_auth = @import("active_auth.zig");
 const query_mod = @import("query.zig");
@@ -44,41 +37,20 @@ pub const refreshForegroundUsageForDisplay = usage_refresh.refreshForegroundUsag
 pub const refreshForegroundUsageForDisplayWithBatchFetcherUsingApiEnabledAndActiveOnly = usage_refresh.refreshForegroundUsageForDisplayWithBatchFetcherUsingApiEnabledAndActiveOnly;
 pub const refreshForegroundUsageForDisplayWithApiFetcherWithPoolInit = usage_refresh.refreshForegroundUsageForDisplayWithApiFetcherWithPoolInit;
 pub const refreshForegroundUsageForDisplayWithApiFetchersWithPoolInitUsingApiEnabledAndPersistAndActiveOnly = usage_refresh.refreshForegroundUsageForDisplayWithApiFetchersWithPoolInitUsingApiEnabledAndPersistAndActiveOnly;
-const refreshForegroundUsageForDisplayWithBatchFetcherUsingApiEnabled = usage_refresh.refreshForegroundUsageForDisplayWithBatchFetcherUsingApiEnabled;
-const refreshForegroundUsageForDisplayWithApiFetchersWithPoolInitUsingApiEnabledAndPersist = usage_refresh.refreshForegroundUsageForDisplayWithApiFetchersWithPoolInitUsingApiEnabledAndPersist;
 pub const initForegroundUsagePool = usage_refresh.initForegroundUsagePool;
 pub const maybeRefreshForegroundAccountNames = account_names.maybeRefreshForegroundAccountNames;
-const maybeRefreshForegroundAccountNamesWithAccountApiEnabled = account_names.maybeRefreshForegroundAccountNamesWithAccountApiEnabled;
-const maybeRefreshForegroundAccountNamesWithAccountApiEnabledAndPersist = account_names.maybeRefreshForegroundAccountNamesWithAccountApiEnabledAndPersist;
-const defaultAccountFetcher = account_names.defaultAccountFetcher;
-const loadActiveAuthInfoForAccountRefresh = account_names.loadActiveAuthInfoForAccountRefresh;
 pub const refreshAccountNamesAfterLogin = account_names.refreshAccountNamesAfterLogin;
 pub const refreshAccountNamesAfterSwitch = account_names.refreshAccountNamesAfterSwitch;
 pub const refreshAccountNamesForList = account_names.refreshAccountNamesForList;
-const shouldRefreshWorkspaceAccountNamesForUserScopeWithAccountApiEnabled = account_names.shouldRefreshWorkspaceAccountNamesForUserScopeWithAccountApiEnabled;
 pub const refreshAccountNamesAfterImport = account_names.refreshAccountNamesAfterImport;
-const loadSingleFileImportAuthInfo = account_names.loadSingleFileImportAuthInfo;
 pub const reconcileActiveAuthAfterRemove = active_auth.reconcileActiveAuthAfterRemove;
-const trackedActiveAccountKey = active_auth.trackedActiveAccountKey;
-const loadCurrentAuthState = active_auth.loadCurrentAuthState;
-const selectionContainsAccountKey = active_auth.selectionContainsAccountKey;
-const selectionContainsIndex = active_auth.selectionContainsIndex;
-const selectBestRemainingAccountKeyByUsageAlloc = active_auth.selectBestRemainingAccountKeyByUsageAlloc;
 pub const resolveSwitchQueryLocally = query_mod.resolveSwitchQueryLocally;
 pub const findMatchingAccounts = query_mod.findMatchingAccounts;
-const findMatchingAccountsForRemove = query_mod.findMatchingAccountsForRemove;
-const findAccountIndexByDisplayNumber = query_mod.findAccountIndexByDisplayNumber;
 pub const isHandledCliError = preflight.isHandledCliError;
-const ensureLiveTty = preflight.ensureLiveTty;
-const apiModeUsesApi = preflight.apiModeUsesApi;
-const ensureForegroundCurlAvailableWithApiEnabled = preflight.ensureForegroundCurlAvailableWithApiEnabled;
 pub const shouldPreflightCurlForForegroundTargetWithApiEnabled = preflight.shouldPreflightCurlForForegroundTargetWithApiEnabled;
 pub const switch_live_default_refresh_interval_ms = live_flow.switch_live_default_refresh_interval_ms;
 pub const SwitchLiveRefreshPolicy = live_flow.SwitchLiveRefreshPolicy;
 pub const SwitchLiveRuntime = live_flow.SwitchLiveRuntime;
-const switchLiveRuntimeMaybeStartRefresh = live_flow.switchLiveRuntimeMaybeStartRefresh;
-const switchLiveRuntimeMaybeTakeUpdatedDisplay = live_flow.switchLiveRuntimeMaybeTakeUpdatedDisplay;
-const switchLiveRuntimeBuildStatusLine = live_flow.switchLiveRuntimeBuildStatusLine;
 pub const findAccountIndexByAccountKeyConst = live_flow.findAccountIndexByAccountKeyConst;
 pub const replaceOptionalOwnedString = live_flow.replaceOptionalOwnedString;
 pub const mapSwitchUsageOverridesToLatest = live_flow.mapSwitchUsageOverridesToLatest;
@@ -88,8 +60,6 @@ pub const buildRemoveLiveActionDisplay = live_flow.buildRemoveLiveActionDisplay;
 pub const loadStoredSwitchSelectionDisplay = live_flow.loadStoredSwitchSelectionDisplay;
 pub const loadStoredSwitchSelectionDisplayWithRefreshError = live_flow.loadStoredSwitchSelectionDisplayWithRefreshError;
 pub const loadInitialLiveSelectionDisplay = live_flow.loadInitialLiveSelectionDisplay;
-const loadSwitchSelectionDisplay = live_flow.loadSwitchSelectionDisplay;
-const removeSelectedAccountsAndPersist = live_flow.removeSelectedAccountsAndPersist;
 pub const switchLiveRuntimeApplySelection = live_flow.switchLiveRuntimeApplySelection;
 pub const removeLiveRuntimeApplySelection = live_flow.removeLiveRuntimeApplySelection;
 
@@ -175,8 +145,4 @@ fn printJsonStartupError(err: anyerror, json_requested: bool) anyerror {
     if (!json_requested or err == error.OutOfMemory) return err;
     try cli.json_output.printError("registry_error", @errorName(err), null);
     return error.RegistryError;
-}
-
-fn freeOwnedStrings(allocator: std.mem.Allocator, items: []const []const u8) void {
-    for (items) |item| allocator.free(@constCast(item));
 }

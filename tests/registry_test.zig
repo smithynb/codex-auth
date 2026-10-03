@@ -952,6 +952,36 @@ test "v2 registry migrates active email records to current schema" {
     try std.testing.expect(std.mem.indexOf(u8, contents, active_expect) != null);
 }
 
+test "v2 migration rejects missing snapshots without double-free" {
+    const gpa = std.testing.allocator;
+    const nonmatching_auth = try authJsonWithEmailPlan(gpa, "other@example.com", "plus");
+    defer gpa.free(nonmatching_auth);
+
+    const active_auth_cases = [_]?[]const u8{ null, "{", nonmatching_auth };
+    for (active_auth_cases) |active_auth| {
+        var tmp = fs.tmpDir(.{});
+        defer tmp.cleanup();
+        const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+        defer gpa.free(codex_home);
+        try tmp.dir.makePath("accounts");
+        if (active_auth) |data| {
+            try tmp.dir.writeFile(.{ .sub_path = "auth.json", .data = data });
+        }
+        try tmp.dir.writeFile(.{
+            .sub_path = "accounts/registry.json",
+            .data =
+            \\{
+            \\  "version": 2,
+            \\  "active_email": "legacy@example.com",
+            \\  "accounts": [{"email": "legacy@example.com", "alias": "work"}]
+            \\}
+            ,
+        });
+
+        try std.testing.expectError(error.FileNotFound, registry.loadRegistry(gpa, codex_home));
+    }
+}
+
 test "ensureAccountsDir hardens accounts directory without changing codex home permissions" {
     const gpa = std.testing.allocator;
     var tmp = fs.tmpDir(.{});

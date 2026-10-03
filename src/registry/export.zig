@@ -2,6 +2,7 @@ const std = @import("std");
 const app_runtime = @import("../core/runtime.zig");
 const auth = @import("../auth/auth.zig");
 const common = @import("common.zig");
+const redact = @import("../core/redact.zig");
 
 const Registry = common.Registry;
 const accountAuthPath = common.accountAuthPath;
@@ -44,7 +45,9 @@ pub fn exportAccounts(
     var exported: usize = 0;
     for (reg.accounts.items) |rec| {
         if (format == .cpa and rec.auth_mode != null and rec.auth_mode.? == .apikey) {
-            std.log.warn("skipping API-key account {s}: CPA export requires ChatGPT tokens", .{rec.email});
+            const email = try redact.redactEmailAlloc(allocator, rec.email);
+            defer allocator.free(email);
+            std.log.warn("skipping API-key account {s}: CPA export requires ChatGPT tokens", .{email});
             continue;
         }
 

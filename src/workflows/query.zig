@@ -46,19 +46,7 @@ pub fn findMatchingAccounts(
     reg: *registry.Registry,
     query: []const u8,
 ) !std.ArrayList(usize) {
-    var matches = std.ArrayList(usize).empty;
-    for (reg.accounts.items, 0..) |*rec, idx| {
-        const matches_email = std.ascii.indexOfIgnoreCase(rec.email, query) != null;
-        const matches_alias = rec.alias.len != 0 and std.ascii.indexOfIgnoreCase(rec.alias, query) != null;
-        const matches_name = if (rec.account_name) |name|
-            name.len != 0 and std.ascii.indexOfIgnoreCase(name, query) != null
-        else
-            false;
-        if (matches_email or matches_alias or matches_name) {
-            try matches.append(allocator, idx);
-        }
-    }
-    return matches;
+    return findMatchingAccountsWithKeys(allocator, reg, query, false);
 }
 
 pub fn findMatchingAccountsForRemove(
@@ -66,7 +54,17 @@ pub fn findMatchingAccountsForRemove(
     reg: *registry.Registry,
     query: []const u8,
 ) !std.ArrayList(usize) {
+    return findMatchingAccountsWithKeys(allocator, reg, query, true);
+}
+
+fn findMatchingAccountsWithKeys(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    query: []const u8,
+    include_keys: bool,
+) !std.ArrayList(usize) {
     var matches = std.ArrayList(usize).empty;
+    errdefer matches.deinit(allocator);
     for (reg.accounts.items, 0..) |*rec, idx| {
         const matches_email = std.ascii.indexOfIgnoreCase(rec.email, query) != null;
         const matches_alias = rec.alias.len != 0 and std.ascii.indexOfIgnoreCase(rec.alias, query) != null;
@@ -74,7 +72,7 @@ pub fn findMatchingAccountsForRemove(
             name.len != 0 and std.ascii.indexOfIgnoreCase(name, query) != null
         else
             false;
-        const matches_key = std.ascii.indexOfIgnoreCase(rec.account_key, query) != null;
+        const matches_key = include_keys and std.ascii.indexOfIgnoreCase(rec.account_key, query) != null;
         if (matches_email or matches_alias or matches_name or matches_key) {
             try matches.append(allocator, idx);
         }

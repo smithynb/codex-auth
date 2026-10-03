@@ -637,7 +637,7 @@ test "Scenario: Given array import report when rendering then items are grouped 
         "Scanning ./tokens/...\n" ++
             "  imported  one_token_file.json\n" ++
             "tokens_array.json:\n" ++
-            "  [1] imported  frank@example.com\n" ++
+            "  [1] imported  fra***@e***.com\n" ++
             "  [2] skipped   MissingEmail\n" ++
             "  updated   another_token_file.json\n" ++
             "Import Summary: 2 imported, 1 updated, 1 skipped (total 3 files)\n",
