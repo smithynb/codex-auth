@@ -16,6 +16,7 @@ const ansi = struct {
     const dim = "\x1b[2m";
     const red = "\x1b[31m";
     const green = "\x1b[32m";
+    const yellow = "\x1b[33m";
     const cyan = "\x1b[36m";
 };
 
@@ -23,6 +24,14 @@ fn planDisplay(rec: *const registry.AccountRecord, missing: []const u8) []const 
     if (rec.auth_mode != null and rec.auth_mode.? == .apikey) return "API_KEY";
     if (registry.resolveDisplayPlan(rec)) |p| return registry.planLabel(p);
     return missing;
+}
+
+fn isUnstartedFiveHourWindow(window: ?registry.RateLimitWindow, now: i64) bool {
+    const value = window orelse return false;
+    if (value.window_minutes != null and value.window_minutes.? != 300) return false;
+    const reset_at = value.resets_at orelse return false;
+    // Match poke and the displayed reset time at minute precision.
+    return value.used_percent == 0 and @divFloor(reset_at, 60) == @divFloor(now + 18000, 60);
 }
 
 pub fn printAccounts(reg: *registry.Registry) !void {
@@ -40,6 +49,11 @@ fn printAccountsTable(reg: *registry.Registry, usage_overrides: ?[]const ?[]cons
     var stdout: io_util.Stdout = undefined;
     stdout.init();
     const out = stdout.out();
+    // Pending terminal input can leave the cursor partway across the line.
+    // Start the header at the same column as the rows, regardless of color.
+    if (std.Io.File.stdout().isTty(app_runtime.io()) catch false) {
+        try out.writeAll("\r\x1b[2K");
+    }
     try writeAccountsTableWithUsageOverrides(out, reg, stdout.color_enabled, usage_overrides);
     try out.flush();
 }
@@ -272,7 +286,10 @@ pub fn writeAccountsTableWithUsageOverrides(
             try out.writeAll("  ");
             try writePadded(out, reset_credits_cell, widths[3]);
             try out.writeAll("  ");
+            const highlight_5h = use_color and usage_override == null and isUnstartedFiveHourWindow(rate_5h, now);
+            if (highlight_5h) try out.writeAll(ansi.yellow);
             try writePadded(out, rate_5h_cell, widths[4]);
+            if (highlight_5h) try out.writeAll(if (row.is_active) ansi.green else ansi.reset);
             try out.writeAll("  ");
             try writePadded(out, rate_week_cell, widths[5]);
             try out.writeAll("  ");
