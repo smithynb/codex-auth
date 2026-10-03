@@ -4,6 +4,15 @@
 
 `codex-auth` is a command-line tool for switching Codex accounts.
 
+## Personal fork additions
+
+This local fork adds:
+
+- [`codex-auth poke`](./docs/commands/poke.md), also available as `codex-auth tickle`, checks fresh usage and sends `ping!` sequentially to stored ChatGPT accounts with an unstarted five-hour window. Accounts with active windows or unavailable usage are skipped. Use `codex-auth poke --dry-run` to check eligibility without sending pings. Pings consume usage.
+- The `RESET CREDITS` column shows the date and time of the soonest-expiring available banked reset, for example `3 (exp 2026-10-04 14:52 PDT)`. Dates use your local timezone. If expiry data is unavailable or stale, it shows only the count. See [reset-credit expiry details](./docs/local-reset-credit-expiry.md).
+
+These additions require the local checkout launcher and native build. The upstream npm install below does not include them. See [local installation](./docs/commands/poke.md#installation).
+
 ## Install
 
 Install with npm:
@@ -88,6 +97,13 @@ codex-auth switch 02
 codex-auth remove work
 codex-auth import /path/to/auth.json --alias personal
 codex-auth list --skip-api
+```
+
+Personal fork examples:
+
+```shell
+codex-auth poke --dry-run
+codex-auth poke
 ```
 
 ## Codex App
