@@ -38,6 +38,44 @@ const ansi = struct {
     const bright_cyan = "\x1b[96m";
 };
 
+fn buildSwitchRowsWithAllocationFailures(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    filtered: bool,
+) !void {
+    const overrides = [_]?[]const u8{ null, "401" };
+    const indices = [_]usize{1};
+    var rows = if (filtered)
+        try cli.rows.buildSwitchRowsFromIndicesWithUsageOverrides(allocator, reg, &indices, &overrides)
+    else
+        try buildSwitchRowsWithUsageOverrides(allocator, reg, &overrides);
+    defer rows.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, if (filtered) 1 else 2), rows.selectable_row_indices.len);
+    for (rows.items) |row| {
+        if (row.account_index == 1) {
+            try std.testing.expect(row.has_error);
+            try std.testing.expectEqualStrings("401", row.rate_5h);
+        }
+    }
+}
+
+test "Scenario: Given allocation failures while building account rows then partial rows are freed" {
+    const allocator = std.testing.allocator;
+    var reg = makeTestRegistry();
+    defer reg.deinit(allocator);
+    try appendTestAccount(allocator, &reg, "user::personal", "user@example.com", "", .plus);
+    try appendTestAccount(allocator, &reg, "user::workspace", "user@example.com", "team", .business);
+    reg.accounts.items[0].last_usage = .{
+        .primary = .{ .used_percent = 10, .window_minutes = 300, .resets_at = 4_102_444_800 },
+        .secondary = null,
+        .credits = null,
+        .plan_type = .plus,
+    };
+    try std.testing.checkAllAllocationFailures(allocator, buildSwitchRowsWithAllocationFailures, .{ &reg, false });
+    try std.testing.checkAllAllocationFailures(allocator, buildSwitchRowsWithAllocationFailures, .{ &reg, true });
+}
+
 fn renderListScreenViewport(
     out: *std.Io.Writer,
     reg: *registry.Registry,
@@ -1600,4 +1638,36 @@ test "Scenario: Given a usage snapshot plan when building switch rows then the d
     defer rows.deinit(gpa);
 
     try std.testing.expectEqualStrings("Business", rows.items[0].plan);
+}
+
+test "mouse wheel step scales with visible rows" {
+    try std.testing.expectEqual(@as(usize, 6), live_tui.mouseWheelRows(1));
+    try std.testing.expectEqual(@as(usize, 6), live_tui.mouseWheelRows(18));
+    try std.testing.expectEqual(@as(usize, 10), live_tui.mouseWheelRows(30));
+    try std.testing.expectEqual(@as(usize, 12), live_tui.mouseWheelRows(80));
+}
+
+test "list viewport keys keep paging and accept alternate-scroll wheel arrows" {
+    var viewport_start: usize = 9;
+    const row_count: usize = 105;
+    const max_rows: usize = 20;
+    const wheel_rows: usize = live_tui.mouseWheelRows(max_rows);
+
+    try std.testing.expect(live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .move_up));
+    try std.testing.expectEqual(@as(usize, 3), viewport_start);
+    try std.testing.expect(live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .move_down));
+    try std.testing.expectEqual(@as(usize, 9), viewport_start);
+    try std.testing.expect(!live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .{ .byte = 'j' }));
+    try std.testing.expectEqual(@as(usize, 9), viewport_start);
+    try std.testing.expect(!live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .{ .byte = 'k' }));
+    try std.testing.expectEqual(@as(usize, 9), viewport_start);
+
+    try std.testing.expect(live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .page_down));
+    try std.testing.expectEqual(@as(usize, 29), viewport_start);
+    try std.testing.expect(live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .page_up));
+    try std.testing.expectEqual(@as(usize, 9), viewport_start);
+    try std.testing.expect(live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .home));
+    try std.testing.expectEqual(@as(usize, 0), viewport_start);
+    try std.testing.expect(live_tui.applyListViewportKey(row_count, max_rows, &viewport_start, wheel_rows, .end));
+    try std.testing.expectEqual(@as(usize, 85), viewport_start);
 }

@@ -93,74 +93,7 @@ pub fn buildSwitchRowsWithUsageOverrides(
     reg: *registry.Registry,
     usage_overrides: ?[]const ?[]const u8,
 ) !SwitchRows {
-    var display = try display_rows.buildDisplayRows(allocator, reg, null);
-    defer display.deinit(allocator);
-    var rows = try allocator.alloc(SwitchRow, display.rows.len);
-    var widths = SwitchWidths{
-        .email = "EMAIL".len,
-        .plan = "PLAN".len,
-        .rate_5h = "5H".len,
-        .rate_week = "WEEKLY".len,
-        .last = "LAST".len,
-    };
-    const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
-    for (display.rows, 0..) |display_row, i| {
-        if (display_row.account_index) |account_idx| {
-            const rec = reg.accounts.items[account_idx];
-            const plan = if (registry.resolveDisplayPlan(&rec)) |p| registry.planLabel(p) else "-";
-            const rate_5h = resolveRateWindow(rec.last_usage, 300, true);
-            const rate_week = resolveRateWindow(rec.last_usage, 10080, false);
-            const usage_override = usageOverrideForAccount(usage_overrides, account_idx);
-            const rate_5h_str = try usageCellTextAlloc(allocator, rate_5h, usage_override);
-            const rate_week_str = try usageCellTextAlloc(allocator, rate_week, usage_override);
-            const last = try timefmt.formatRelativeTimeOrDashAlloc(allocator, rec.last_usage_at, now);
-            rows[i] = .{
-                .account_index = account_idx,
-                .account = try allocator.dupe(u8, display_row.account_cell),
-                .plan = plan,
-                .rate_5h = rate_5h_str,
-                .rate_week = rate_week_str,
-                .last = last,
-                .depth = display_row.depth,
-                .is_active = display_row.is_active,
-                .has_error = usage_override != null,
-                .is_header = false,
-            };
-            widths.email = @max(widths.email, display_row.account_cell.len + (@as(usize, display_row.depth) * 2));
-            widths.plan = @max(widths.plan, plan.len);
-            widths.rate_5h = @max(widths.rate_5h, rate_5h_str.len);
-            widths.rate_week = @max(widths.rate_week, rate_week_str.len);
-            widths.last = @max(widths.last, last.len);
-        } else {
-            rows[i] = .{
-                .account_index = null,
-                .account = try allocator.dupe(u8, display_row.account_cell),
-                .plan = "",
-                .rate_5h = try allocator.dupe(u8, ""),
-                .rate_week = try allocator.dupe(u8, ""),
-                .last = try allocator.dupe(u8, ""),
-                .depth = display_row.depth,
-                .is_active = false,
-                .has_error = false,
-                .is_header = true,
-            };
-            widths.email = @max(widths.email, display_row.account_cell.len + (@as(usize, display_row.depth) * 2));
-        }
-    }
-    if (widths.email > 32) widths.email = 32;
-    return SwitchRows{
-        .items = rows,
-        .selectable_row_indices = try allocator.dupe(usize, display.selectable_row_indices),
-        .widths = widths,
-    };
-}
-
-fn buildSwitchRowsFromIndices(
-    allocator: std.mem.Allocator,
-    reg: *registry.Registry,
-    indices: []const usize,
-) !SwitchRows {
-    return buildSwitchRowsFromIndicesWithUsageOverrides(allocator, reg, indices, null);
+    return buildSwitchRowsForDisplay(allocator, reg, null, usage_overrides);
 }
 
 pub fn buildSwitchRowsFromIndicesWithUsageOverrides(
@@ -169,9 +102,23 @@ pub fn buildSwitchRowsFromIndicesWithUsageOverrides(
     indices: []const usize,
     usage_overrides: ?[]const ?[]const u8,
 ) !SwitchRows {
+    return buildSwitchRowsForDisplay(allocator, reg, indices, usage_overrides);
+}
+
+fn buildSwitchRowsForDisplay(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    indices: ?[]const usize,
+    usage_overrides: ?[]const ?[]const u8,
+) !SwitchRows {
     var display = try display_rows.buildDisplayRows(allocator, reg, indices);
     defer display.deinit(allocator);
-    var rows = try allocator.alloc(SwitchRow, display.rows.len);
+    const rows = try allocator.alloc(SwitchRow, display.rows.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (rows[0..initialized]) |*row| row.deinit(allocator);
+        allocator.free(rows);
+    }
     var widths = SwitchWidths{
         .email = "EMAIL".len,
         .plan = "PLAN".len,
@@ -188,8 +135,11 @@ pub fn buildSwitchRowsFromIndicesWithUsageOverrides(
             const rate_week = resolveRateWindow(rec.last_usage, 10080, false);
             const usage_override = usageOverrideForAccount(usage_overrides, account_idx);
             const rate_5h_str = try usageCellTextAlloc(allocator, rate_5h, usage_override);
+            errdefer allocator.free(rate_5h_str);
             const rate_week_str = try usageCellTextAlloc(allocator, rate_week, usage_override);
+            errdefer allocator.free(rate_week_str);
             const last = try timefmt.formatRelativeTimeOrDashAlloc(allocator, rec.last_usage_at, now);
+            errdefer allocator.free(last);
             rows[i] = .{
                 .account_index = account_idx,
                 .account = try allocator.dupe(u8, display_row.account_cell),
@@ -208,13 +158,21 @@ pub fn buildSwitchRowsFromIndicesWithUsageOverrides(
             widths.rate_week = @max(widths.rate_week, rate_week_str.len);
             widths.last = @max(widths.last, last.len);
         } else {
+            const account = try allocator.dupe(u8, display_row.account_cell);
+            errdefer allocator.free(account);
+            const rate_5h = try allocator.dupe(u8, "");
+            errdefer allocator.free(rate_5h);
+            const rate_week = try allocator.dupe(u8, "");
+            errdefer allocator.free(rate_week);
+            const last = try allocator.dupe(u8, "");
+            errdefer allocator.free(last);
             rows[i] = .{
                 .account_index = null,
-                .account = try allocator.dupe(u8, display_row.account_cell),
+                .account = account,
                 .plan = "",
-                .rate_5h = try allocator.dupe(u8, ""),
-                .rate_week = try allocator.dupe(u8, ""),
-                .last = try allocator.dupe(u8, ""),
+                .rate_5h = rate_5h,
+                .rate_week = rate_week,
+                .last = last,
                 .depth = display_row.depth,
                 .is_active = false,
                 .has_error = false,
@@ -222,6 +180,7 @@ pub fn buildSwitchRowsFromIndicesWithUsageOverrides(
             };
             widths.email = @max(widths.email, display_row.account_cell.len + (@as(usize, display_row.depth) * 2));
         }
+        initialized += 1;
     }
     if (widths.email > 32) widths.email = 32;
     return SwitchRows{
@@ -243,12 +202,11 @@ pub fn resolveRateWindow(usage: ?registry.RateLimitSnapshot, minutes: i64, fallb
 }
 
 fn formatRateLimitSwitchAlloc(allocator: std.mem.Allocator, window: ?registry.RateLimitWindow) ![]u8 {
-    if (window == null) return try std.fmt.allocPrint(allocator, "-", .{});
-    if (window.?.resets_at == null) return try std.fmt.allocPrint(allocator, "-", .{});
+    if (window == null or window.?.resets_at == null) return allocator.dupe(u8, "-");
     const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
     const reset_at = window.?.resets_at.?;
     if (now >= reset_at) {
-        return try std.fmt.allocPrint(allocator, "100%", .{});
+        return allocator.dupe(u8, "100%");
     }
     const remaining = remainingPercent(window.?.used_percent);
     var parts = try resetPartsAlloc(allocator, reset_at, now);
@@ -297,18 +255,13 @@ fn localtimeCompat(ts: i64, out_tm: *c.struct_tm) bool {
 
 fn resetPartsAlloc(allocator: std.mem.Allocator, reset_at: i64, now: i64) !ResetParts {
     var tm: c.struct_tm = undefined;
-    if (!localtimeCompat(reset_at, &tm)) {
-        return ResetParts{
-            .time = try std.fmt.allocPrint(allocator, "-", .{}),
-            .date = try std.fmt.allocPrint(allocator, "-", .{}),
-            .same_day = true,
-        };
-    }
     var now_tm: c.struct_tm = undefined;
-    if (!localtimeCompat(now, &now_tm)) {
+    if (!localtimeCompat(reset_at, &tm) or !localtimeCompat(now, &now_tm)) {
+        const time = try allocator.dupe(u8, "-");
+        errdefer allocator.free(time);
         return ResetParts{
-            .time = try std.fmt.allocPrint(allocator, "-", .{}),
-            .date = try std.fmt.allocPrint(allocator, "-", .{}),
+            .time = time,
+            .date = try allocator.dupe(u8, "-"),
             .same_day = true,
         };
     }
@@ -332,8 +285,10 @@ fn resetPartsAlloc(allocator: std.mem.Allocator, reset_at: i64, now: i64) !Reset
         "Dec",
     };
     const month_idx: usize = if (tm.tm_mon < 0) 0 else @min(@as(usize, @intCast(tm.tm_mon)), months.len - 1);
+    const time = try std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}", .{ hour, min });
+    errdefer allocator.free(time);
     return ResetParts{
-        .time = try std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}", .{ hour, min }),
+        .time = time,
         .date = try std.fmt.allocPrint(allocator, "{d} {s}", .{ day, months[month_idx] }),
         .same_day = same_day,
     };

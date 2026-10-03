@@ -21,6 +21,7 @@ when `NO_COLOR` is set).
 - Your active account, daemon, and user configuration are not switched or loaded.
 - API-key accounts are skipped (no ChatGPT subscription window applies).
 - Failed accounts are reported and do not stop later accounts.
+- Human-readable status lines mask email identity and domain, matching the native account list (for example, `ben***@g***.com`).
 - There is no automatic model fallback or retry.
 
 ## Options

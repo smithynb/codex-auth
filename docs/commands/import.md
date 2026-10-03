@@ -44,3 +44,4 @@ Use `--purge` as a recovery tool when the registry index is out of sync with the
 - `stderr` receives skipped rows and warnings.
 - Parse failures render as `InvalidJSON`.
 - Validation failures keep explicit names such as `MissingEmail` or `MissingChatgptUserId`.
+- Array item reports mask account emails. File names and explicit paths remain readable so failed imports can be located.

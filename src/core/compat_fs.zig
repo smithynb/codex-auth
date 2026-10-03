@@ -1,53 +1,11 @@
-const builtin = @import("builtin");
 const std = @import("std");
+const app_runtime = @import("runtime.zig");
 
 pub const path = std.fs.path;
 pub const max_path_bytes = std.Io.Dir.max_path_bytes;
 pub const max_name_bytes = std.Io.Dir.max_name_bytes;
 
-// Zig 0.16's global_single_threaded Io uses Allocator.failing. That works
-// for simple file and mutex operations, but process spawning allocates argv/env
-// through the Io implementation and will otherwise fail with error.OutOfMemory.
-var io_init_mutex: std.Io.Mutex = .init;
-var io_instance: std.Io.Threaded = undefined;
-var io_initialized = false;
-
-fn bootstrapIo() std.Io {
-    return std.Io.Threaded.global_single_threaded.io();
-}
-
-fn currentEnviron() std.process.Environ {
-    const env_block: std.process.Environ.Block = switch (builtin.os.tag) {
-        .windows => .global,
-        else => blk: {
-            const c_environ = std.c.environ;
-            var env_count: usize = 0;
-            while (c_environ[env_count] != null) : (env_count += 1) {}
-            break :blk .{ .slice = c_environ[0..env_count :null] };
-        },
-    };
-    return .{ .block = env_block };
-}
-
-fn ensureIoInitialized() void {
-    if (@atomicLoad(bool, &io_initialized, .acquire)) return;
-
-    const bootstrap_io = bootstrapIo();
-    io_init_mutex.lockUncancelable(bootstrap_io);
-    defer io_init_mutex.unlock(bootstrap_io);
-
-    if (@atomicLoad(bool, &io_initialized, .acquire)) return;
-
-    io_instance = std.Io.Threaded.init(std.heap.page_allocator, .{
-        .environ = currentEnviron(),
-    });
-    @atomicStore(bool, &io_initialized, true, .release);
-}
-
-pub fn io() std.Io {
-    ensureIoInitialized();
-    return io_instance.io();
-}
+pub const io = app_runtime.io;
 
 pub fn cwd() Dir {
     return wrapDir(std.Io.Dir.cwd());
@@ -76,17 +34,9 @@ pub fn deleteFileAbsolute(absolute_path: []const u8) !void {
     try std.Io.Dir.deleteFileAbsolute(io(), absolute_path);
 }
 
-fn dupeOwnedNoSentinel(allocator: std.mem.Allocator, z_path: [:0]u8) ![]u8 {
-    defer allocator.free(z_path);
-    return try allocator.dupe(u8, z_path);
-}
-
 pub fn realpathAlloc(allocator: std.mem.Allocator, file_path: []const u8) ![]u8 {
     if (path.isAbsolute(file_path)) {
-        return try dupeOwnedNoSentinel(
-            allocator,
-            try std.Io.Dir.realPathFileAbsoluteAlloc(io(), file_path, allocator),
-        );
+        return try app_runtime.realPathFileAbsoluteAlloc(allocator, file_path);
     }
     return try cwd().realpathAlloc(allocator, file_path);
 }
@@ -285,10 +235,7 @@ pub const Dir = struct {
     }
 
     pub fn realpathAlloc(self: Dir, allocator: std.mem.Allocator, sub_path: []const u8) ![]u8 {
-        return try dupeOwnedNoSentinel(
-            allocator,
-            try self.inner.realPathFileAlloc(io(), sub_path, allocator),
-        );
+        return try app_runtime.realPathFileAlloc(allocator, self.inner, sub_path);
     }
 
     pub fn statFile(self: Dir, sub_path: []const u8) !std.Io.Dir.Stat {

@@ -33,16 +33,14 @@ pub fn runChildCaptureWithInputAndOutputLimit(
     env_map: ?*const std.process.Environ.Map,
     output_limit_bytes: usize,
 ) !ChildCaptureResult {
-    var child = std.process.spawn(app_runtime.io(), .{
+    var child = try std.process.spawn(app_runtime.io(), .{
         .argv = argv,
         .environ_map = env_map,
         .stdin = if (stdin_bytes != null) .pipe else .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
         .create_no_window = true,
-    }) catch |err| switch (err) {
-        else => return err,
-    };
+    });
     errdefer child.kill(app_runtime.io());
 
     if (stdin_bytes) |bytes| {

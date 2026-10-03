@@ -1,5 +1,8 @@
 const std = @import("std");
 const registry = @import("../registry/root.zig");
+const redact = @import("../core/redact.zig");
+
+pub const redactEmailAlloc = redact.redactEmailAlloc;
 
 pub const DisplayRow = struct {
     account_index: ?usize,
@@ -41,8 +44,8 @@ pub fn buildDisplayRows(
     std.sort.insertion(usize, ordered, SortContext{ .reg = reg }, lessThanByDisplayOrder);
 
     var row_list = std.ArrayList(DisplayRow).empty;
-    errdefer for (row_list.items) |*row| row.deinit(allocator);
     defer row_list.deinit(allocator);
+    errdefer for (row_list.items) |*row| row.deinit(allocator);
     var selectable = std.ArrayList(usize).empty;
     defer selectable.deinit(allocator);
 
@@ -166,6 +169,9 @@ fn groupedAccountCellAlloc(
 ) ![]u8 {
     const rec = &reg.accounts.items[account_idx];
     const base = displayPlan(rec);
+    if (rec.alias.len != 0 or normalizedAccountName(rec) != null) {
+        return buildPreferredAccountLabelAlloc(allocator, rec, base);
+    }
     var total_same: usize = 0;
     var ordinal: usize = 1;
     for (group_indices) |candidate_idx| {
@@ -193,72 +199,72 @@ pub fn buildPreferredAccountLabelAlloc(
     rec: *const registry.AccountRecord,
     fallback: []const u8,
 ) ![]u8 {
+    const api_key_label = if (rec.auth_mode != null and rec.auth_mode.? == .apikey)
+        try apiKeyLabelFromAccountKeyAlloc(allocator, rec.account_key)
+    else
+        null;
+    defer if (api_key_label) |value| allocator.free(value);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    writePreferredAccountLabel(&out.writer, rec, api_key_label, fallback) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
+fn writePreferredAccountLabel(
+    out: *std.Io.Writer,
+    rec: *const registry.AccountRecord,
+    api_key_label: ?[]const u8,
+    fallback: []const u8,
+) !void {
     const alias = if (rec.alias.len != 0) rec.alias else null;
     const account_name = normalizedAccountName(rec);
 
     if (rec.auth_mode != null and rec.auth_mode.? == .apikey) {
-        const api_key_label = try apiKeyLabelFromAccountKeyAlloc(allocator, rec.account_key);
-        defer if (api_key_label) |value| allocator.free(value);
-
-        if (alias != null and api_key_label != null) {
-            return std.fmt.allocPrint(allocator, "{s}({s})", .{ alias.?, api_key_label.? });
+        if (alias) |value| {
+            try redact.writeRedactedText(out, value);
+            if (api_key_label) |label| try out.print("({s})", .{label});
+        } else if (api_key_label) |label| {
+            try out.writeAll(label);
+        } else {
+            try redact.writeRedactedText(out, account_name orelse fallback);
         }
-        if (alias != null) return allocator.dupe(u8, alias.?);
-        if (api_key_label != null) return allocator.dupe(u8, api_key_label.?);
-        if (account_name != null) return allocator.dupe(u8, account_name.?);
-        return allocator.dupe(u8, fallback);
+        return;
     }
-    if (alias != null and account_name != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s})", .{ alias.?, account_name.? });
+    if (alias) |value| try redact.writeRedactedText(out, value);
+    if (account_name) |name| {
+        if (alias != null) try out.writeAll("(");
+        try redact.writeRedactedText(out, name);
+        if (alias != null) try out.writeAll(")");
     }
-    if (alias != null) return allocator.dupe(u8, alias.?);
-    if (account_name != null) return allocator.dupe(u8, account_name.?);
-    return allocator.dupe(u8, fallback);
+    if (alias == null and account_name == null) try redact.writeRedactedText(out, fallback);
 }
 
 pub fn buildAccountIdentityLabelAlloc(
     allocator: std.mem.Allocator,
     rec: *const registry.AccountRecord,
 ) ![]u8 {
-    const alias = if (rec.alias.len != 0) rec.alias else null;
-    const account_name = normalizedAccountName(rec);
     const email = try redactEmailAlloc(allocator, rec.email);
     defer allocator.free(email);
-
-    if (alias != null and account_name != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s}, {s})", .{ alias.?, account_name.?, email });
-    }
-    if (alias != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s})", .{ alias.?, email });
-    }
-    if (account_name != null) {
-        return std.fmt.allocPrint(allocator, "{s}({s})", .{ account_name.?, email });
-    }
-    return allocator.dupe(u8, email);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    writeAccountIdentityLabel(&out.writer, rec, email) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
 }
 
-pub fn redactEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
-    const at = std.mem.indexOfScalar(u8, email, '@') orelse return allocator.dupe(u8, email);
-    const local = email[0..at];
-    const domain = email[at + 1 ..];
-    if (local.len == 0 or domain.len == 0) return allocator.dupe(u8, "***@***");
-    const suffix_start = std.mem.lastIndexOfScalar(u8, domain, '.') orelse domain.len;
-    const suffix = if (suffix_start > 0 and suffix_start + 1 < domain.len) domain[suffix_start..] else "";
-    return std.fmt.allocPrint(allocator, "{s}***@{s}***{s}", .{
-        characterPrefix(local, 3), characterPrefix(domain[0..suffix_start], 1), suffix,
-    });
-}
-
-fn characterPrefix(value: []const u8, count: usize) []const u8 {
-    var end: usize = 0;
-    var characters: usize = 0;
-    while (end < value.len) : (end += 1) {
-        if (value[end] & 0xc0 != 0x80) {
-            if (characters == count) break;
-            characters += 1;
-        }
+fn writeAccountIdentityLabel(out: *std.Io.Writer, rec: *const registry.AccountRecord, email: []const u8) !void {
+    const alias = if (rec.alias.len != 0) rec.alias else null;
+    const account_name = normalizedAccountName(rec);
+    if (alias) |value| try redact.writeRedactedText(out, value);
+    if (account_name) |name| {
+        if (alias != null) try out.writeAll("(");
+        try redact.writeRedactedText(out, name);
     }
-    return value[0..end];
+    if (alias != null or account_name != null) {
+        try out.writeAll(if (alias != null and account_name != null) ", " else "(");
+        try out.print("{s})", .{email});
+    } else {
+        try out.writeAll(email);
+    }
 }
 
 fn normalizedAccountName(rec: *const registry.AccountRecord) ?[]const u8 {

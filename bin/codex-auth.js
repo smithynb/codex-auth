@@ -65,7 +65,6 @@ function resolveBinary() {
 
   try {
     const packageRoot = path.dirname(require.resolve(`${packageName}/package.json`));
-    const binaryName = process.platform === "win32" ? "codex-auth.exe" : "codex-auth";
     const binaryPath = path.join(packageRoot, "bin", binaryName);
     if (!fs.existsSync(binaryPath)) {
       console.error(`Missing binary inside ${packageName}: ${binaryPath}`);
@@ -120,7 +119,7 @@ if (['poke', 'tickle'].includes(argv[0])) {
   const binaryPath = resolveBinary();
   process.exit(await runPoke({ binaryPath, argv: argv.slice(1) }));
 }
-if (['help'].includes(argv[0]) && ['poke', 'tickle'].includes(argv[1])) {
+if (argv[0] === 'help' && ['poke', 'tickle'].includes(argv[1])) {
   const { pokeHelp } = await import('./personal-poke.mjs');
   process.stdout.write(pokeHelp);
   process.exit(0);
@@ -141,9 +140,7 @@ function personalHelpBlock() {
 }
 
 function isTopLevelHelp(args) {
-  if (args.length === 0) return true;
-  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h' || args[0] === 'help')) return true;
-  return false;
+  return args.length === 0 || (args.length === 1 && ['--help', '-h', 'help'].includes(args[0]));
 }
 
 const shouldOfferRestart = argv[0] === "switch"

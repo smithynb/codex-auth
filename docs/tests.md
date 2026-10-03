@@ -45,6 +45,24 @@ Avoid `test_api` or other test-only public namespaces in `src/`. If a rule is im
 
 Private implementation details that are not stable behavior should not be tested directly.
 
+## Launcher and terminal regressions
+
+The personal fork also has offline Node and Python regressions for poke eligibility,
+email masking, daemon restart prompts, help output, and terminal layout. Run them
+after installing the local binary:
+
+```sh
+zig build
+node --test tests/personal_poke_test.mjs
+python3 tests/personal_restart_test.py
+python3 tests/personal_help_test.py
+python3 tests/list_terminal_test.py
+```
+
+These tests use temporary account fixtures and fake executables. They do not need
+real credentials or provider requests. The Python terminal tests require POSIX
+pseudoterminals, so CI runs this group on Ubuntu alongside the Zig platform matrix.
+
 ## Fixtures
 
 Fixtures belong under `tests/support/`. Import them with a relative path from tests:

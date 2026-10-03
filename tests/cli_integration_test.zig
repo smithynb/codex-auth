@@ -1960,10 +1960,10 @@ test "Scenario: Given directory import with regular files and array files when r
             "  imported  another_token_file.json\n" ++
             "  imported  one_token_file.json\n" ++
             "tokens_array.json:\n" ++
-            "  [1] imported  erin.array@example.com\n" ++
-            "  [2] imported  frank.array@example.com\n" ++
+            "  [1] imported  eri***@e***.com\n" ++
+            "  [2] imported  fra***@e***.com\n" ++
             "tokens_array_mixed.json:\n" ++
-            "  [1] imported  grace.array@example.com\n" ++
+            "  [1] imported  gra***@e***.com\n" ++
             "  [2] skipped   MissingEmail\n" ++
             "Import Summary: 5 imported, 0 updated, 2 skipped (total 6 files)\n",
         .{imports_path},
@@ -2540,7 +2540,7 @@ test "Scenario: Given alias set with a direct local match when running alias the
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expectEqualStrings("Updated alias for backup@example.com: backup -> work\n", result.stdout);
+    try std.testing.expectEqualStrings("Updated alias for bac***@e***.com: backup -> work\n", result.stdout);
     try std.testing.expectEqualStrings("", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -2549,6 +2549,127 @@ test "Scenario: Given alias set with a direct local match when running alias the
     defer gpa.free(backup_key);
     const idx = registry.findAccountIndexByAccountKey(&loaded, backup_key) orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("work", loaded.accounts.items[idx].alias);
+}
+
+test "email aliases stay raw in storage and JSON while human output is masked" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+    try seedRegistryWithAccounts(gpa, home_root, "active@example.com", &[_]SeedAccount{
+        .{ .email = "active@example.com", .alias = "active" },
+        .{ .email = "backup@example.com", .alias = "" },
+    });
+    const alias = "Work <contact@example.net>";
+    const expected_status = [_][]const u8{
+        "Set alias for bac***@e***.com: Work <con***@e***.net>\n",
+        "Alias already set for bac***@e***.com: Work <con***@e***.net>\n",
+    };
+    for (expected_status) |expected| {
+        const result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "alias", "set", "backup@example.com", alias });
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+        try expectSuccess(result);
+        try std.testing.expectEqualStrings(expected, result.stdout);
+    }
+
+    const list_result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "list", "--skip-api" });
+    defer gpa.free(list_result.stdout);
+    defer gpa.free(list_result.stderr);
+    try expectSuccess(list_result);
+    try std.testing.expect(std.mem.indexOf(u8, list_result.stdout, "contact@example.net") == null);
+    try std.testing.expect(std.mem.indexOf(u8, list_result.stdout, "backup@example.com") == null);
+
+    const json_result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "list", "--skip-api", "--json" });
+    defer gpa.free(json_result.stdout);
+    defer gpa.free(json_result.stderr);
+    try expectSuccess(json_result);
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, json_result.stdout, .{});
+    defer parsed.deinit();
+    const account = parsed.value.object.get("accounts").?.array.items[1].object;
+    try std.testing.expectEqualStrings("backup@example.com", account.get("email").?.string);
+    try std.testing.expectEqualStrings(alias, account.get("alias").?.string);
+
+    const duplicate = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "alias", "set", "active@example.com", alias });
+    defer gpa.free(duplicate.stdout);
+    defer gpa.free(duplicate.stderr);
+    try expectFailure(duplicate);
+    try std.testing.expect(std.mem.indexOf(u8, duplicate.stderr, "alias 'Work <con***@e***.net>' is already used by bac***@e***.com.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, duplicate.stderr, "contact@example.net") == null);
+
+    const codex_home = try codexHomeAlloc(gpa, home_root);
+    defer gpa.free(codex_home);
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqualStrings(alias, loaded.accounts.items[1].alias);
+    try std.testing.expectEqualStrings("backup@example.com", loaded.accounts.items[1].email);
+
+    const clear_result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "alias", "clear", "backup@example.com" });
+    defer gpa.free(clear_result.stdout);
+    defer gpa.free(clear_result.stderr);
+    try expectSuccess(clear_result);
+    try std.testing.expectEqualStrings("Cleared alias for bac***@e***.com: Work <con***@e***.net>\n", clear_result.stdout);
+}
+
+test "unmatched email selectors are masked in human diagnostics" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+    try seedRegistryWithAccounts(gpa, home_root, "active@example.com", &.{.{ .email = "active@example.com", .alias = "active" }});
+    const cases = [_][]const []const u8{
+        &.{ "switch", "missing@example.com" },
+        &.{ "alias", "clear", "missing@example.com" },
+        &.{ "remove", "missing@example.com" },
+        &.{ "remove", "missing@example.com", "other@example.net" },
+        &.{ "switch", "missing!@example.com" },
+        &.{ "alias", "clear", "missing'@example.com" },
+    };
+    for (cases) |args| {
+        const result = try runCliWithIsolatedHome(gpa, project_root, home_root, args);
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+        try expectFailure(result);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, "mis***@e***.com") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, "missing@example.com") == null);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, "other@example.net") == null);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, "missing!@example.com") == null);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, "missing'@example.com") == null);
+    }
+    const rare_selectors = [_][2][]const u8{
+        .{ "\"missing user\"@example.com", "\"mis***\"@e***.com" },
+        .{ "\"missing\\\" user\"@example.com", "\"mis***\"@e***.com" },
+        .{ "\"missing@user\"@example.com", "\"mis***\"@e***.com" },
+        .{ "\"missing@ user\\\" name\"@example.com", "\"mis***\"@e***.com" },
+        .{ "missing@[192.168.1.10]", "mis***@[***]" },
+        .{ "missing@[IPv6:2001:db8::1]", "mis***@[***]" },
+        .{ "Notes \"Contact \"private user\"@example.com\"", "Notes \"Contact \"pri***\"@e***.com\"" },
+        .{ "Notes \"unfinished text then \"private user\"@example.com", "Notes \"unfinished text then \"pri***\"@e***.com" },
+    };
+    for (rare_selectors) |case| {
+        const result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "switch", case[0] });
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+        try expectFailure(result);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, case[1]) != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.stderr, case[0]) == null);
+
+        const alias_result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "alias", "set", "active@example.com", case[0] });
+        defer gpa.free(alias_result.stdout);
+        defer gpa.free(alias_result.stderr);
+        try expectSuccess(alias_result);
+        try std.testing.expect(std.mem.indexOf(u8, alias_result.stdout, case[1]) != null);
+        try std.testing.expect(std.mem.indexOf(u8, alias_result.stdout, case[0]) == null);
+        try std.testing.expect(std.mem.indexOf(u8, alias_result.stdout, "active@example.com") == null);
+    }
 }
 
 test "Scenario: Given alias clear with display number when running alias then registry alias is removed" {
@@ -2581,7 +2702,7 @@ test "Scenario: Given alias clear with display number when running alias then re
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expectEqualStrings("Cleared alias for backup@example.com: backup\n", result.stdout);
+    try std.testing.expectEqualStrings("Cleared alias for bac***@e***.com: backup\n", result.stdout);
     try std.testing.expectEqualStrings("", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -2623,7 +2744,7 @@ test "Scenario: Given alias set with duplicate alias when running alias then it 
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "alias 'ACTIVE' is already used by active@example.com.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "alias 'ACTIVE' is already used by act***@e***.com.") != null);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
@@ -2996,13 +3117,15 @@ test "Scenario: Given cached usage when an API refresh fails then list json keep
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "usage refresh failed for alpha@example.com: RequestFailed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "usage refresh failed for alp***@e***.com: RequestFailed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "alpha@example.com") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, result.stdout, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
     try std.testing.expect(root.get("warnings") == null);
     const account = root.get("accounts").?.array.items[0].object;
+    try std.testing.expectEqualStrings("alpha@example.com", account.get("email").?.string);
     try std.testing.expectEqualStrings("enterprise", account.get("plan").?.string);
     const usage = account.get("usage").?.object;
     try std.testing.expectEqualStrings("cache", usage.get("source").?.string);

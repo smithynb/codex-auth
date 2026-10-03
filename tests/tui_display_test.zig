@@ -13,6 +13,15 @@ test "email display masks identity and domain but preserves the final suffix" {
         .{ "@example.com", "***@***" },
         .{ "user@", "***@***" },
         .{ "API key", "API key" },
+        .{ "fixture!@example.com", "fix***@e***.com" },
+        .{ "o'brien@example.com", "o'b***@e***.com" },
+        .{ "\"private user\"@example.com", "\"pri***\"@e***.com" },
+        .{ "\"private\\\" user\"@example.com", "\"pri***\"@e***.com" },
+        .{ "\"private@user\"@example.com", "\"pri***\"@e***.com" },
+        .{ "\"private@ user\"@example.com", "\"pri***\"@e***.com" },
+        .{ "\"private@user\\\" name\"@example.com", "\"pri***\"@e***.com" },
+        .{ "private@[192.168.1.10]", "pri***@[***]" },
+        .{ "private@[IPv6:2001:db8::1]", "pri***@[***]" },
     };
     for (cases) |case| {
         const label = try display_rows.redactEmailAlloc(std.testing.allocator, case[0]);
@@ -204,6 +213,111 @@ test "Scenario: Given singleton accounts with alias and account name combination
     try std.testing.expect(std.mem.eql(u8, rows.rows[1].account_cell, "backup(ali***@e***.com)"));
     try std.testing.expect(std.mem.eql(u8, rows.rows[2].account_cell, "fal***@e***.com"));
     try std.testing.expect(std.mem.eql(u8, rows.rows[3].account_cell, "Sandbox(nam***@e***.com)"));
+}
+
+test "human account labels mask emails embedded in aliases and workspace names" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, "user::workspace", "owner@example.com", "Work <contact@example.net>", .business);
+    reg.accounts.items[0].account_name = try gpa.dupe(u8, "Workspace for éééé@école.edu, backup@office.com.");
+    const rec = &reg.accounts.items[0];
+
+    const preferred = try display_rows.buildPreferredAccountLabelAlloc(gpa, rec, "Business");
+    defer gpa.free(preferred);
+    try std.testing.expectEqualStrings(
+        "Work <con***@e***.net>(Workspace for ééé***@é***.edu, bac***@o***.com.)",
+        preferred,
+    );
+    const identity = try display_rows.buildAccountIdentityLabelAlloc(gpa, rec);
+    defer gpa.free(identity);
+    try std.testing.expectEqualStrings(
+        "Work <con***@e***.net>(Workspace for ééé***@é***.edu, bac***@o***.com., own***@e***.com)",
+        identity,
+    );
+    try std.testing.expectEqualStrings("Work <contact@example.net>", rec.alias);
+    try std.testing.expectEqualStrings("Workspace for éééé@école.edu, backup@office.com.", rec.account_name.?);
+    try std.testing.expectEqualStrings("owner@example.com", rec.email);
+}
+
+test "API key preferred labels mask email aliases while preserving the fingerprint" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendApiKeyAccount(gpa, &reg, "apikey::user_api::0123456789abcdef", "owner@example.com");
+    gpa.free(reg.accounts.items[0].alias);
+    reg.accounts.items[0].alias = try gpa.dupe(u8, "contact@example.net");
+
+    const label = try display_rows.buildPreferredAccountLabelAlloc(gpa, &reg.accounts.items[0], "API key");
+    defer gpa.free(label);
+    try std.testing.expectEqualStrings("con***@e***.net(sk-01234***cdef)", label);
+}
+
+test "email punctuation in aliases cannot bypass masking" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, "user::workspace", "fixture!@example.com", "Contact fixture!@example.com or o'brien@example.net", .business);
+    const label = try display_rows.buildAccountIdentityLabelAlloc(gpa, &reg.accounts.items[0]);
+    defer gpa.free(label);
+    try std.testing.expectEqualStrings("Contact fix***@e***.com or o'b***@e***.net(fix***@e***.com)", label);
+}
+
+test "quoted email identities and domain literals are masked inside labels" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    const alias = "Contact \"private user\"@example.com or \"private\\\" user\"@office.net; private@[192.168.1.10]; \"private@ user\\\" name\"@office.org";
+    try appendAccount(gpa, &reg, "user::workspace", "owner@example.com", alias, .business);
+    const label = try display_rows.buildAccountIdentityLabelAlloc(gpa, &reg.accounts.items[0]);
+    defer gpa.free(label);
+    try std.testing.expectEqualStrings(
+        "Contact \"pri***\"@e***.com or \"pri***\"@o***.net; pri***@[***]; \"pri***\"@o***.org(own***@e***.com)",
+        label,
+    );
+    try std.testing.expectEqualStrings(alias, reg.accounts.items[0].alias);
+}
+
+test "ordinary quoted labels preserve text around masked emails" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, "user::workspace", "owner@example.com", "Notes \"contact@example.net mentions @handle\" then \"private@user\"@office.com", .business);
+    const label = try display_rows.buildPreferredAccountLabelAlloc(gpa, &reg.accounts.items[0], "Business");
+    defer gpa.free(label);
+    try std.testing.expectEqualStrings("Notes \"con***@e***.net mentions @handle\" then \"pri***\"@o***.com", label);
+}
+
+test "surrounding quotes cannot hide a quoted email in account labels" {
+    const gpa = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{ "Notes \"Contact \"private user\"@example.com\"", "Notes \"Contact \"pri***\"@e***.com\"" },
+        .{ "Notes \"unfinished text then \"private user\"@example.com", "Notes \"unfinished text then \"pri***\"@e***.com" },
+    };
+    for (cases) |case| {
+        var reg = makeRegistry();
+        defer reg.deinit(gpa);
+        try appendAccount(gpa, &reg, "user::workspace", "owner@example.com", case[0], .business);
+        const label = try display_rows.buildPreferredAccountLabelAlloc(gpa, &reg.accounts.items[0], "Business");
+        defer gpa.free(label);
+        try std.testing.expectEqualStrings(case[1], label);
+        try std.testing.expectEqualStrings(case[0], reg.accounts.items[0].alias);
+    }
+}
+
+test "long unmatched email markers remain unchanged in account labels" {
+    const gpa = std.testing.allocator;
+    for ([_][]const u8{ "@", "@[" }) |pattern| {
+        const alias = try gpa.alloc(u8, 32_768 * pattern.len);
+        defer gpa.free(alias);
+        for (0..32_768) |idx| @memcpy(alias[idx * pattern.len ..][0..pattern.len], pattern);
+        var reg = makeRegistry();
+        defer reg.deinit(gpa);
+        try appendAccount(gpa, &reg, "user::workspace", "owner@example.com", alias, .business);
+        const label = try display_rows.buildPreferredAccountLabelAlloc(gpa, &reg.accounts.items[0], "Business");
+        defer gpa.free(label);
+        try std.testing.expectEqualStrings(alias, label);
+    }
 }
 
 test "Scenario: Given mixed singleton and grouped accounts when building display rows then singleton rows include preferred labels while grouped rows keep child labels" {

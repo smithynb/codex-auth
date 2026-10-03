@@ -171,16 +171,12 @@ fn resolveLegacySnapshotPathForEmail(
 
     const active_path = try activeAuthPath(allocator, codex_home);
     errdefer allocator.free(active_path);
-    const active_info = auth.parseAuthInfo(allocator, active_path) catch {
-        allocator.free(active_path);
-        return error.FileNotFound;
-    };
+    const active_info = auth.parseAuthInfo(allocator, active_path) catch return error.FileNotFound;
     defer active_info.deinit(allocator);
     if (active_info.email != null and std.mem.eql(u8, active_info.email.?, email)) {
         return active_path;
     }
 
-    allocator.free(active_path);
     return error.FileNotFound;
 }
 
@@ -402,11 +398,6 @@ fn detectSchemaVersion(root_obj: std.json.ObjectMap) u32 {
     return schemaVersionFieldValue(root_obj) orelse if (root_obj.get("active_email") != null) 2 else current_schema_version;
 }
 
-fn applySchemaMigrations(reg: *Registry, loaded_schema_version: u32) void {
-    _ = reg;
-    _ = loaded_schema_version;
-}
-
 fn logUnsupportedRegistryVersion(version_value: u32) void {
     if (builtin.is_test) return;
     std.log.err(
@@ -463,8 +454,6 @@ pub fn loadRegistry(allocator: std.mem.Allocator, codex_home: []const u8) !Regis
         },
     };
     errdefer reg.deinit(allocator);
-    applySchemaMigrations(&reg, schema_version);
-
     if (needs_rewrite) {
         try saveRegistry(allocator, codex_home, &reg);
     }
