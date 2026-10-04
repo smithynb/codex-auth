@@ -9,6 +9,13 @@ const RateLimitWindow = common.RateLimitWindow;
 const RolloutSignature = common.RolloutSignature;
 const CreditsSnapshot = common.CreditsSnapshot;
 
+pub fn parseTimeFormat(value: std.json.Value) ?@import("../time/clock.zig").TimeFormat {
+    return switch (value) {
+        .string => |text| @import("../time/clock.zig").parseTimeFormat(text),
+        else => null,
+    };
+}
+
 pub fn normalizePlanType(s: []const u8) PlanType {
     if (std.ascii.eqlIgnoreCase(s, "free")) return .free;
     if (std.ascii.eqlIgnoreCase(s, "go")) return .go;

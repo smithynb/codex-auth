@@ -50,10 +50,10 @@ class ListTerminalTest(unittest.TestCase):
         self.env = {**os.environ, "CODEX_HOME": self.home.name, "TERM": "xterm-256color"}
         self.env.pop("CLICOLOR_FORCE", None)
 
-    def capture_tty(self, color):
+    def capture_tty(self, color, cols=180):
         master, slave = pty.openpty()
         try:
-            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 180, 0, 0))
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, cols, 0, 0))
             os.write(slave, b"codex-auth pok")
             env = dict(self.env)
             env.pop("NO_COLOR", None)
@@ -91,6 +91,15 @@ class ListTerminalTest(unittest.TestCase):
                     self.assertEqual(header.index("ACCOUNT"), row.index("use***@e***.com"))
                     self.assertEqual(header.index("5H"), row.index(f"{90-index}%"))
                     self.assertEqual(header.index("WEEKLY"), row.index(f"{80-index}%"))
+
+    def test_narrow_list_keeps_reset_credit_count_without_partial_expiry(self):
+        registry = Path(self.home.name) / "accounts" / "registry.json"
+        data = json.loads(registry.read_text())
+        data["time_format"] = "12h"
+        registry.write_text(json.dumps(data))
+        output = ANSI.sub(b"", self.capture_tty(False, cols=60))
+        self.assertNotIn(b"(exp ", output)
+        self.assertEqual(len(re.findall(rb"(?<!\S)3(?!\S)", output)), 2)
 
     def test_redirected_output_has_no_cursor_controls(self):
         result = subprocess.run(["node", str(CLI), "list", "--skip-api"],

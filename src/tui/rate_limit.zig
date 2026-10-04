@@ -2,6 +2,7 @@ const std = @import("std");
 const app_runtime = @import("../core/runtime.zig");
 const builtin = @import("builtin");
 const registry = @import("../registry/root.zig");
+const clock = @import("../time/clock.zig");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -29,6 +30,10 @@ pub fn resolveRateWindow(usage: ?registry.RateLimitSnapshot, minutes: i64, fallb
 }
 
 pub fn formatRateLimitFullAlloc(window: ?registry.RateLimitWindow) ![]u8 {
+    return formatRateLimitFullWithFormatAlloc(window, .@"24h");
+}
+
+pub fn formatRateLimitFullWithFormatAlloc(window: ?registry.RateLimitWindow, time_format: clock.TimeFormat) ![]u8 {
     if (window == null) return try std.fmt.allocPrint(std.heap.page_allocator, "-", .{});
     if (window.?.resets_at == null) return try std.fmt.allocPrint(std.heap.page_allocator, "-", .{});
     const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
@@ -37,7 +42,7 @@ pub fn formatRateLimitFullAlloc(window: ?registry.RateLimitWindow) ![]u8 {
         return try std.fmt.allocPrint(std.heap.page_allocator, "100%", .{});
     }
     const remaining = remainingPercent(window.?.used_percent);
-    var parts = try resetPartsAlloc(reset_at, now);
+    var parts = try resetPartsAlloc(reset_at, now, time_format);
     defer parts.deinit();
     if (parts.same_day) {
         return std.fmt.allocPrint(std.heap.page_allocator, "{d}% ({s})", .{ remaining, parts.time });
@@ -45,7 +50,7 @@ pub fn formatRateLimitFullAlloc(window: ?registry.RateLimitWindow) ![]u8 {
     return std.fmt.allocPrint(std.heap.page_allocator, "{d}% ({s} on {s})", .{ remaining, parts.time, parts.date });
 }
 
-pub fn formatRateLimitUiAlloc(window: ?registry.RateLimitWindow, width: usize) ![]u8 {
+pub fn formatRateLimitUiAlloc(window: ?registry.RateLimitWindow, width: usize, time_format: clock.TimeFormat) ![]u8 {
     if (window == null) return try std.fmt.allocPrint(std.heap.page_allocator, "-", .{});
     if (window.?.resets_at == null) return try std.fmt.allocPrint(std.heap.page_allocator, "-", .{});
     const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
@@ -54,7 +59,7 @@ pub fn formatRateLimitUiAlloc(window: ?registry.RateLimitWindow, width: usize) !
         return try std.fmt.allocPrint(std.heap.page_allocator, "100%", .{});
     }
     const remaining = remainingPercent(window.?.used_percent);
-    var parts = try resetPartsAlloc(reset_at, now);
+    var parts = try resetPartsAlloc(reset_at, now, time_format);
     defer parts.deinit();
 
     const candidates_same = [_][]const u8{
@@ -84,7 +89,7 @@ pub fn formatRateLimitUiAlloc(window: ?registry.RateLimitWindow, width: usize) !
     return std.fmt.allocPrint(std.heap.page_allocator, "{s}", .{candidate_percent});
 }
 
-fn resetPartsAlloc(reset_at: i64, now: i64) !ResetParts {
+fn resetPartsAlloc(reset_at: i64, now: i64, time_format: clock.TimeFormat) !ResetParts {
     var tm: c.struct_tm = undefined;
     if (!localtimeCompat(reset_at, &tm)) {
         return ResetParts{
@@ -122,19 +127,23 @@ fn resetPartsAlloc(reset_at: i64, now: i64) !ResetParts {
     };
     const month_idx: usize = if (tm.tm_mon < 0) 0 else @min(@as(usize, @intCast(tm.tm_mon)), months.len - 1);
     return ResetParts{
-        .time = try std.fmt.allocPrint(std.heap.page_allocator, "{d:0>2}:{d:0>2}", .{ hour, min }),
+        .time = try clock.formatClockAlloc(std.heap.page_allocator, hour, min, time_format),
         .date = try std.fmt.allocPrint(std.heap.page_allocator, "{d} {s}", .{ day, months[month_idx] }),
         .same_day = same_day,
     };
 }
 
-pub fn formatExpiryAlloc(allocator: std.mem.Allocator, ts: i64) ![]u8 {
+pub fn formatExpiryAlloc(allocator: std.mem.Allocator, ts: i64, time_format: clock.TimeFormat) ![]u8 {
     var tm: c.struct_tm = undefined;
     if (!localtimeCompat(ts, &tm)) return allocator.dupe(u8, "unknown");
-    var buffer: [64]u8 = undefined;
-    const len = c.strftime(&buffer, buffer.len, "%Y-%m-%d %H:%M %Z", &tm);
-    if (len == 0) return allocator.dupe(u8, "unknown");
-    return allocator.dupe(u8, buffer[0..len]);
+    var date_buffer: [32]u8 = undefined;
+    const date_len = c.strftime(&date_buffer, date_buffer.len, "%Y-%m-%d", &tm);
+    if (date_len == 0) return allocator.dupe(u8, "unknown");
+    var zone_buffer: [64]u8 = undefined;
+    const zone_len = c.strftime(&zone_buffer, zone_buffer.len, "%Z", &tm);
+    const time = try clock.formatClockAlloc(allocator, @intCast(tm.tm_hour), @intCast(tm.tm_min), time_format);
+    defer allocator.free(time);
+    return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ date_buffer[0..date_len], time, zone_buffer[0..zone_len] });
 }
 
 fn localtimeCompat(ts: i64, out_tm: *c.struct_tm) bool {

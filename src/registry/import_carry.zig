@@ -12,6 +12,7 @@ const parseLiveIntervalSeconds = parse.parseLiveIntervalSeconds;
 
 const PurgeCarryForwardConfig = struct {
     live: LiveConfig = defaultLiveConfig(),
+    time_format: @import("../time/clock.zig").TimeFormat = .@"24h",
 };
 
 pub fn loadPurgeCarryForwardConfig(allocator: std.mem.Allocator, codex_home: []const u8) !PurgeCarryForwardConfig {
@@ -37,12 +38,18 @@ fn parsePurgeCarryForwardConfig(allocator: std.mem.Allocator, data: []const u8) 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch {
         applyCarryForwardObjectSlice(allocator, data, "live", &cfg.live, parseCarryForwardLiveConfig);
         applyCarryForwardScalarSlice(data, "interval_seconds", &cfg.live);
+        if (findJsonScalarFieldSlice(data, "time_format")) |slice| {
+            var value = std.json.parseFromSlice(std.json.Value, allocator, slice, .{}) catch return cfg;
+            defer value.deinit();
+            cfg.time_format = parse.parseTimeFormat(value.value) orelse .@"24h";
+        }
         return cfg;
     };
     defer parsed.deinit();
 
     switch (parsed.value) {
         .object => |obj| {
+            if (obj.get("time_format")) |v| cfg.time_format = parse.parseTimeFormat(v) orelse .@"24h";
             if (obj.get("live")) |v| parseLiveConfig(&cfg.live, v);
             if (obj.get("interval_seconds")) |v| {
                 if (parseLiveIntervalSeconds(v)) |value| cfg.live.interval_seconds = value;

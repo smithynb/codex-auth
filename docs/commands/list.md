@@ -36,6 +36,7 @@ When local-only refresh is active, only the active account can be updated from l
 - Singleton rows with both alias and account name render as `alias(account name, email)`.
 - Grouped rows keep the shared email in the header; child rows with both alias and account name render as `alias(account name)`.
 - Usage cells show remaining percent and reset time when that data is known.
+- Clock times default to 24-hour format. Use [`codex-auth config time --format 12h`](./config.md#time-format) for AM/PM in reset times and reset-credit expiry, including pickers and live views.
 - In non-live colored output, an unstarted `5H` cell is yellow: zero usage and a reset time five hours ahead at minute precision, matching `poke`.
 - In non-live output, `CREDITS` shows the integer part of the current `credits.balance` value.
 - `RESET CREDITS` shows the stored banked reset count and, in this personal fork, the date and time of the soonest-expiring available reset, for example `3 (exp 2026-10-04 14:52 PDT)`. Dates use the machine's local timezone. Unknown or stale expiry data leaves only the count. This is the expiry of a banked reset, separate from the weekly quota reset. See [reset-credit expiry details](../local-reset-credit-expiry.md).

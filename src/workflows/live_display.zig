@@ -243,6 +243,7 @@ pub fn cloneRegistryAlloc(allocator: std.mem.Allocator, reg: *const registry.Reg
         .active_account_activated_at_ms = reg.active_account_activated_at_ms,
         .api = reg.api,
         .live = reg.live,
+        .time_format = reg.time_format,
         .accounts = std.ArrayList(registry.AccountRecord).empty,
     };
     errdefer cloned.deinit(allocator);
@@ -339,6 +340,7 @@ pub fn buildRemoveLiveActionDisplay(
         .active_account_activated_at_ms = null,
         .api = current_display.reg.api,
         .live = current_display.reg.live,
+        .time_format = current_display.reg.time_format,
         .accounts = std.ArrayList(registry.AccountRecord).empty,
     };
     errdefer reg.deinit(allocator);

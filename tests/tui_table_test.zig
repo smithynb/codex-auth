@@ -315,3 +315,41 @@ test "writeAccountsTable shows API_KEY in the plan column for API key auth" {
     try std.testing.expect(std.mem.indexOf(u8, output, "use***@e***.com") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "API_KEY") != null);
 }
+
+test "configured time format reaches list, picker, live copies, and credit expiry" {
+    const gpa = std.testing.allocator;
+    var reg = makeTestRegistry();
+    defer reg.deinit(gpa);
+    try appendTestAccount(gpa, &reg, "user-1::acc-1", "user@example.com", "", .plus);
+    reg.accounts.items[0].last_usage = .{
+        .primary = .{ .used_percent = 25, .window_minutes = 300, .resets_at = 4102444800 },
+        .secondary = .{ .used_percent = 50, .window_minutes = 10080, .resets_at = 4103049600 },
+        .credits = null,
+        .reset_credits = 3,
+        .reset_credits_expires_at = 4102444800,
+        .plan_type = .plus,
+    };
+    for ([_]codex_auth.time.clock.TimeFormat{ .@"12h", .@"24h" }) |time_format| {
+        reg.time_format = time_format;
+        var live_display = try codex_auth.workflows.buildSwitchLiveActionDisplay(gpa, .{ .reg = &reg, .usage_overrides = null }, &reg);
+        defer live_display.deinit(gpa);
+        try std.testing.expectEqual(time_format, live_display.reg.time_format);
+        var rows = try codex_auth.cli.rows.buildSwitchRows(gpa, &live_display.reg);
+        defer rows.deinit(gpa);
+        const row = rows.items[rows.selectable_row_indices[0]];
+        var aw: std.Io.Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        try writeAccountsTable(&aw.writer, &reg, false);
+        for ([_][]const u8{ row.rate_5h, row.rate_week }) |cell| {
+            try std.testing.expect(std.mem.indexOf(u8, aw.written(), cell) != null);
+            const has_meridiem = std.mem.indexOf(u8, cell, " AM") != null or std.mem.indexOf(u8, cell, " PM") != null;
+            try std.testing.expectEqual(time_format == .@"12h", has_meridiem);
+        }
+        const expiry_start = std.mem.indexOf(u8, aw.written(), "3 (exp ") orelse return error.TestExpectedEqual;
+        const expiry_tail = aw.written()[expiry_start..];
+        const expiry_end = std.mem.indexOfScalar(u8, expiry_tail, ')') orelse return error.TestExpectedEqual;
+        const expiry = expiry_tail[0..expiry_end];
+        const has_meridiem = std.mem.indexOf(u8, expiry, " AM") != null or std.mem.indexOf(u8, expiry, " PM") != null;
+        try std.testing.expectEqual(time_format == .@"12h", has_meridiem);
+    }
+}

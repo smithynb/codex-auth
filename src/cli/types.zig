@@ -61,7 +61,10 @@ pub const CleanOptions = struct {
 pub const LiveOptions = struct {
     interval_seconds: u16,
 };
-pub const ConfigOptions = union(enum) { live: LiveOptions };
+pub const ConfigOptions = union(enum) {
+    live: LiveOptions,
+    time: @import("../time/clock.zig").TimeFormat,
+};
 pub const AppAction = enum { launch };
 pub const AppPlatform = enum { win, wsl, mac };
 pub const AppOptions = struct {

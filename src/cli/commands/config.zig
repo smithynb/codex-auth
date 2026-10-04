@@ -12,7 +12,24 @@ pub fn parse(allocator: std.mem.Allocator, args: []const [:0]const u8) !types.Pa
     if (std.mem.eql(u8, scope, "live")) {
         return parseLive(allocator, args[1..]);
     }
+    if (std.mem.eql(u8, scope, "time")) {
+        return parseTime(allocator, args[1..]);
+    }
     return common.usageErrorResult(allocator, .config, "unknown config section `{s}`.", .{scope});
+}
+
+fn parseTime(allocator: std.mem.Allocator, args: []const [:0]const u8) !types.ParseResult {
+    if (args.len == 1 and common.isHelpFlag(std.mem.sliceTo(args[0], 0))) {
+        return .{ .command = .{ .help = .config } };
+    }
+    if (args.len != 2) return common.usageErrorResult(allocator, .config, "`config time` requires `--format <12h|24h>`.", .{});
+    const flag = std.mem.sliceTo(args[0], 0);
+    if (!std.mem.eql(u8, flag, "--format")) {
+        return common.usageErrorResult(allocator, .config, "unknown argument `{s}` for `config time`; expected `--format`.", .{flag});
+    }
+    const format = @import("../../time/clock.zig").parseTimeFormat(std.mem.sliceTo(args[1], 0)) orelse
+        return common.usageErrorResult(allocator, .config, "`--format` must be `12h` or `24h`.", .{});
+    return .{ .command = .{ .config = .{ .time = format } } };
 }
 
 fn parseLive(allocator: std.mem.Allocator, args: []const [:0]const u8) !types.ParseResult {

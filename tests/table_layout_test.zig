@@ -152,3 +152,36 @@ test "Scenario: Given an alias-sized account label when rendering a narrow table
     try std.testing.expect(std.mem.indexOf(u8, output, "31%") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "42%") != null);
 }
+
+test "narrow list, switch, and remove views keep AM/PM or show only percent" {
+    const rows = [_]SwitchRow{
+        testRow("demo@example.com", "Plus", "75% (2:05 PM on 5 Oct)", "50% (2:05 PM on 11 Oct)", "Now"),
+    };
+    var reg = makeTestRegistry();
+    defer reg.deinit(std.testing.allocator);
+    const widths = cli.render.SwitchWidths{ .email = 16, .plan = 4, .rate_5h = rows[0].rate_5h.len, .rate_week = rows[0].rate_week.len, .last = 3 };
+    const Mode = enum { list, switch_account, remove };
+    for ([_]usize{ 62, 65, 80 }) |cols| {
+        for ([_]Mode{ .list, .switch_account, .remove }) |mode| {
+            var buffer: [1024]u8 = undefined;
+            var writer: std.Io.Writer = .fixed(&buffer);
+            var styled = StyledWriter.init(&writer, false);
+            const viewport = cli.render.LiveListViewport{ .max_cols = cols };
+            switch (mode) {
+                .list => try cli.render.renderListScreenViewport(&styled, &reg, &rows, 2, widths, "", viewport),
+                .switch_account => try cli.render.renderSwitchListViewport(&styled, &reg, &rows, 2, widths, 0, viewport),
+                .remove => try cli.render.renderRemoveListViewport(&styled, &reg, &rows, 2, widths, 0, &.{false}, viewport),
+            }
+            const output = writer.buffered();
+            try expectLinesWithin(output, cols);
+            try std.testing.expect(std.mem.indexOf(u8, output, "75%") != null);
+            try std.testing.expect(std.mem.indexOf(u8, output, "50%") != null);
+            var start: usize = 0;
+            while (std.mem.indexOfPos(u8, output, start, "2:")) |idx| {
+                try std.testing.expect(std.mem.startsWith(u8, output[idx..], "2:05 PM"));
+                start = idx + 2;
+            }
+            if (cols == 80) try std.testing.expect(std.mem.indexOf(u8, output, "2:05 PM") != null);
+        }
+    }
+}

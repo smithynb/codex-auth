@@ -27,6 +27,7 @@ pub const terminal = struct {
 };
 
 pub const time = struct {
+    pub const clock = @import("time/clock.zig");
     pub const relative = @import("time/relative.zig");
 };
 

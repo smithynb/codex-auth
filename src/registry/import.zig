@@ -78,6 +78,7 @@ pub fn purgeRegistryFromImportSourceWithSaver(
 
     var reg = defaultRegistry();
     reg.live = carry_forward.live;
+    reg.time_format = carry_forward.time_format;
     defer reg.deinit(allocator);
 
     var report = if (auth_path) |path|

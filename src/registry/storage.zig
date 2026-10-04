@@ -300,6 +300,7 @@ fn loadLegacyRegistryV2(
     }
 
     parseRegistryLiveConfig(&reg.live, root_obj);
+    if (root_obj.get("time_format")) |v| reg.time_format = parse.parseTimeFormat(v) orelse .@"24h";
 
     for (legacy_accounts.items) |*legacy| {
         try migrateLegacyRecord(allocator, codex_home, &reg, legacy_active_email, legacy);
@@ -348,6 +349,7 @@ fn loadCurrentRegistry(allocator: std.mem.Allocator, root_obj: std.json.ObjectMa
     }
 
     parseRegistryLiveConfig(&reg.live, root_obj);
+    if (root_obj.get("time_format")) |v| reg.time_format = parse.parseTimeFormat(v) orelse .@"24h";
 
     return reg;
 }

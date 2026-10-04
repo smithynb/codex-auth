@@ -552,6 +552,8 @@ test "Scenario: Given config help when rendering then live mode is explained" {
     try std.testing.expect(std.mem.indexOf(u8, config_help, "live --interval <seconds>\n                    Set the live TUI refresh interval from 5 to 3600 seconds.") != null);
     try std.testing.expect(std.mem.indexOf(u8, config_help, "codex-auth config live --interval 60") != null);
     try std.testing.expect(std.mem.indexOf(u8, config_help, "auto") == null);
+    try std.testing.expect(std.mem.indexOf(u8, config_help, "config time --format <12h|24h>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config_help, "default: 24h") != null);
 }
 
 test "Scenario: Given scanned import report when rendering then stdout and stderr match the import format" {
@@ -695,6 +697,7 @@ test "Scenario: Given config live interval when parsing then interval is preserv
         .command => |cmd| switch (cmd) {
             .config => |opts| switch (opts) {
                 .live => |live_opts| try std.testing.expectEqual(@as(u16, 30), live_opts.interval_seconds),
+                else => return error.TestExpectedEqual,
             },
             else => return error.TestExpectedEqual,
         },
@@ -1608,4 +1611,44 @@ test "Scenario: Given selector environment when deciding switch or remove UI the
     try std.testing.expect(cli.picker.shouldUseNumberedRemoveSelector(false, true, false));
     try std.testing.expect(!cli.picker.shouldUseNumberedRemoveSelector(false, true, true));
     try std.testing.expect(!cli.picker.shouldUseNumberedRemoveSelector(true, true, true));
+}
+
+test "config time accepts supported formats and section help" {
+    const clock = @import("codex_auth").time.clock;
+    for ([_]clock.TimeFormat{ .@"12h", .@"24h" }) |format| {
+        const value = try std.testing.allocator.dupeZ(u8, @tagName(format));
+        defer std.testing.allocator.free(value);
+        const args = [_][:0]const u8{ "codex-auth", "config", "time", "--format", value };
+        var result = try cli.commands.parseArgs(std.testing.allocator, &args);
+        defer cli.commands.freeParseResult(std.testing.allocator, &result);
+        switch (result) {
+            .command => |cmd| switch (cmd) {
+                .config => |opts| switch (opts) {
+                    .time => |actual| try std.testing.expectEqual(format, actual),
+                    else => return error.TestExpectedEqual,
+                },
+                else => return error.TestExpectedEqual,
+            },
+            else => return error.TestExpectedEqual,
+        }
+    }
+    const args = [_][:0]const u8{ "codex-auth", "config", "time", "--help" };
+    var result = try cli.commands.parseArgs(std.testing.allocator, &args);
+    defer cli.commands.freeParseResult(std.testing.allocator, &result);
+    try expectHelp(result, .config);
+}
+
+test "config time rejects missing, invalid, and extra arguments" {
+    const cases = [_][]const [:0]const u8{
+        &.{ "codex-auth", "config", "time" },
+        &.{ "codex-auth", "config", "time", "--format" },
+        &.{ "codex-auth", "config", "time", "--format", "AM/PM" },
+        &.{ "codex-auth", "config", "time", "--unknown", "12h" },
+        &.{ "codex-auth", "config", "time", "--format", "12h", "extra" },
+    };
+    for (cases) |args| {
+        var result = try cli.commands.parseArgs(std.testing.allocator, args);
+        defer cli.commands.freeParseResult(std.testing.allocator, &result);
+        try expectUsageError(result, .config, null);
+    }
 }

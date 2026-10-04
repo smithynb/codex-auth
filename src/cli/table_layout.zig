@@ -80,12 +80,35 @@ pub const LiveTable = struct {
             try writeRepeat(out, ' ', indent);
             if (i == 0) {
                 try writeAccountTruncatedPadded(out, cells[i].text, column.width - indent);
+            } else if (i == 2 or i == 3) {
+                try writeRateLimitPadded(out, cells[i].text, column.width - indent);
             } else {
                 try writeTruncatedPadded(out, cells[i].text, column.width - indent);
             }
         }
     }
 };
+
+fn writeRateLimitPadded(out: *std.Io.Writer, text: []const u8, width: usize) !void {
+    if (text.len > width) {
+        if (std.mem.indexOf(u8, text, "% (")) |percent_idx| {
+            const meridiem_idx = std.mem.indexOf(u8, text, " AM") orelse std.mem.indexOf(u8, text, " PM");
+            if (meridiem_idx) |idx| {
+                // A shortened 12-hour clock must retain its AM/PM suffix.
+                const clock_end = idx + 3;
+                if (clock_end + 1 <= width) {
+                    try out.writeAll(text[0..clock_end]);
+                    try out.writeAll(")");
+                    try writeRepeat(out, ' ', width - clock_end - 1);
+                } else {
+                    try writeTruncatedPadded(out, text[0 .. percent_idx + 1], width);
+                }
+                return;
+            }
+        }
+    }
+    try writeTruncatedPadded(out, text, width);
+}
 
 pub fn accountTable(widths: SwitchWidths, prefix_width: usize) LiveTable {
     return .{

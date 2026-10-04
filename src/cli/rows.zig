@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const display_rows = @import("../tui/display.zig");
 const registry = @import("../registry/root.zig");
 const timefmt = @import("../time/relative.zig");
+const clock = @import("../time/clock.zig");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -79,9 +80,10 @@ fn usageCellTextAlloc(
     allocator: std.mem.Allocator,
     window: ?registry.RateLimitWindow,
     usage_override: ?[]const u8,
+    time_format: clock.TimeFormat,
 ) ![]u8 {
     if (usage_override) |value| return allocator.dupe(u8, value);
-    return formatRateLimitSwitchAlloc(allocator, window);
+    return formatRateLimitSwitchAlloc(allocator, window, time_format);
 }
 
 pub fn buildSwitchRows(allocator: std.mem.Allocator, reg: *registry.Registry) !SwitchRows {
@@ -134,9 +136,9 @@ fn buildSwitchRowsForDisplay(
             const rate_5h = resolveRateWindow(rec.last_usage, 300, true);
             const rate_week = resolveRateWindow(rec.last_usage, 10080, false);
             const usage_override = usageOverrideForAccount(usage_overrides, account_idx);
-            const rate_5h_str = try usageCellTextAlloc(allocator, rate_5h, usage_override);
+            const rate_5h_str = try usageCellTextAlloc(allocator, rate_5h, usage_override, reg.time_format);
             errdefer allocator.free(rate_5h_str);
-            const rate_week_str = try usageCellTextAlloc(allocator, rate_week, usage_override);
+            const rate_week_str = try usageCellTextAlloc(allocator, rate_week, usage_override, reg.time_format);
             errdefer allocator.free(rate_week_str);
             const last = try timefmt.formatRelativeTimeOrDashAlloc(allocator, rec.last_usage_at, now);
             errdefer allocator.free(last);
@@ -201,7 +203,7 @@ pub fn resolveRateWindow(usage: ?registry.RateLimitSnapshot, minutes: i64, fallb
     return if (fallback_primary) usage.?.primary else usage.?.secondary;
 }
 
-fn formatRateLimitSwitchAlloc(allocator: std.mem.Allocator, window: ?registry.RateLimitWindow) ![]u8 {
+fn formatRateLimitSwitchAlloc(allocator: std.mem.Allocator, window: ?registry.RateLimitWindow, time_format: clock.TimeFormat) ![]u8 {
     if (window == null or window.?.resets_at == null) return allocator.dupe(u8, "-");
     const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
     const reset_at = window.?.resets_at.?;
@@ -209,7 +211,7 @@ fn formatRateLimitSwitchAlloc(allocator: std.mem.Allocator, window: ?registry.Ra
         return allocator.dupe(u8, "100%");
     }
     const remaining = remainingPercent(window.?.used_percent);
-    var parts = try resetPartsAlloc(allocator, reset_at, now);
+    var parts = try resetPartsAlloc(allocator, reset_at, now, time_format);
     defer parts.deinit(allocator);
     if (parts.same_day) {
         return std.fmt.allocPrint(allocator, "{d}% ({s})", .{ remaining, parts.time });
@@ -253,7 +255,7 @@ fn localtimeCompat(ts: i64, out_tm: *c.struct_tm) bool {
     return false;
 }
 
-fn resetPartsAlloc(allocator: std.mem.Allocator, reset_at: i64, now: i64) !ResetParts {
+fn resetPartsAlloc(allocator: std.mem.Allocator, reset_at: i64, now: i64, time_format: clock.TimeFormat) !ResetParts {
     var tm: c.struct_tm = undefined;
     var now_tm: c.struct_tm = undefined;
     if (!localtimeCompat(reset_at, &tm) or !localtimeCompat(now, &now_tm)) {
@@ -285,7 +287,7 @@ fn resetPartsAlloc(allocator: std.mem.Allocator, reset_at: i64, now: i64) !Reset
         "Dec",
     };
     const month_idx: usize = if (tm.tm_mon < 0) 0 else @min(@as(usize, @intCast(tm.tm_mon)), months.len - 1);
-    const time = try std.fmt.allocPrint(allocator, "{d:0>2}:{d:0>2}", .{ hour, min });
+    const time = try clock.formatClockAlloc(allocator, hour, min, time_format);
     errdefer allocator.free(time);
     return ResetParts{
         .time = time,

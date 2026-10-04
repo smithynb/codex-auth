@@ -2025,3 +2025,26 @@ test "export accounts writes cpa token files to default backup directory" {
     try std.testing.expect(std.mem.indexOf(u8, exported, "\"refresh_token\": \"refresh-export-cpa@example.com\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, exported, "\"tokens\"") == null);
 }
+
+test "time format defaults for legacy and invalid settings and survives saving" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    for ([_][]const u8{ "", ",\"time_format\":\"invalid\"", ",\"time_format\":12", ",\"time_format\":null" }) |field| {
+        const data = try std.fmt.allocPrint(gpa, "{{\"schema_version\":4,\"accounts\":[]{s}}}", .{field});
+        defer gpa.free(data);
+        try tmp.dir.writeFile(.{ .sub_path = "accounts/registry.json", .data = data });
+        var reg = try registry.loadRegistry(gpa, codex_home);
+        defer reg.deinit(gpa);
+        try std.testing.expectEqual(.@"24h", reg.time_format);
+        reg.time_format = .@"12h";
+        try registry.saveRegistry(gpa, codex_home, &reg);
+        var loaded = try registry.loadRegistry(gpa, codex_home);
+        defer loaded.deinit(gpa);
+        try std.testing.expectEqual(.@"12h", loaded.time_format);
+    }
+}

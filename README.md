@@ -86,6 +86,7 @@ Detailed command documentation lives in [docs/commands/README.md](./docs/command
 | Command | Description |
 |---------|-------------|
 | [`codex-auth config live --interval <seconds>`](./docs/commands/config.md) | Configure live TUI refresh interval |
+| [`codex-auth config time --format <12h\|24h>`](./docs/commands/config.md#time-format) | Choose 24-hour or AM/PM clock times |
 
 ## Quick Examples
 

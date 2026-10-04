@@ -1782,6 +1782,11 @@ test "Scenario: Given purge with no recoverable active auth when running import 
     const stale_auth = "{\"broken\":true}";
     try tmp.dir.writeFile(.{ .sub_path = ".codex/auth.json", .data = stale_auth });
 
+    const config_result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "config", "time", "--format", "12h" });
+    defer gpa.free(config_result.stdout);
+    defer gpa.free(config_result.stderr);
+    try expectSuccess(config_result);
+
     const result = try runCliWithIsolatedHome(gpa, project_root, home_root, &[_][]const u8{ "import", "--purge" });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
@@ -1822,6 +1827,7 @@ test "Scenario: Given purge with no recoverable active auth when running import 
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
+    try std.testing.expectEqual(.@"12h", loaded.time_format);
     try std.testing.expect(loaded.active_account_key != null);
     try std.testing.expect(std.mem.eql(u8, loaded.active_account_key.?, alpha_key));
 }
@@ -5031,4 +5037,42 @@ test "Scenario: Given unsupported native host with missing explicit codex CLI pa
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "ERROR: --codex-cli-path: Path does not exist\n") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, missing_cli_path) == null);
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Environment Configuration") == null);
+}
+
+test "config time persists across commands and invalid input leaves the registry unchanged" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+    const codex_home = try codexHomeAlloc(gpa, home_root);
+    defer gpa.free(codex_home);
+
+    for ([_][]const u8{ "12h", "24h" }) |value| {
+        const result = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "config", "time", "--format", value });
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+        try expectSuccess(result);
+        try std.testing.expect(std.mem.indexOf(u8, result.stdout, value) != null);
+        var loaded = try registry.loadRegistry(gpa, codex_home);
+        defer loaded.deinit(gpa);
+        try std.testing.expectEqualStrings(value, @tagName(loaded.time_format));
+    }
+    const registry_path = try registry.registryPath(gpa, codex_home);
+    defer gpa.free(registry_path);
+    const before = try fixtures.readFileAlloc(gpa, registry_path);
+    defer gpa.free(before);
+    const invalid = try runCliWithIsolatedHome(gpa, project_root, home_root, &.{ "config", "time", "--format", "invalid" });
+    defer gpa.free(invalid.stdout);
+    defer gpa.free(invalid.stderr);
+    switch (invalid.term) {
+        .exited => |code| try std.testing.expectEqual(@as(u8, 2), code),
+        else => return error.TestExpectedEqual,
+    }
+    const after = try fixtures.readFileAlloc(gpa, registry_path);
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings(before, after);
 }

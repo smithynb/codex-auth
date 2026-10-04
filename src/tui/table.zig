@@ -6,6 +6,7 @@ const registry = @import("../registry/root.zig");
 const io_util = @import("../core/io_util.zig");
 const rate_limit = @import("rate_limit.zig");
 const timefmt = @import("../time/relative.zig");
+const clock = @import("../time/clock.zig");
 
 const resolveRateWindow = rate_limit.resolveRateWindow;
 const formatRateLimitUiAlloc = rate_limit.formatRateLimitUiAlloc;
@@ -76,18 +77,20 @@ fn usageCellTextAlloc(
     window: ?registry.RateLimitWindow,
     max_width: usize,
     usage_override: ?[]const u8,
+    time_format: clock.TimeFormat,
 ) ![]u8 {
     if (usage_override) |value| return allocator.dupe(u8, value);
-    return formatRateLimitUiAlloc(window, max_width);
+    return formatRateLimitUiAlloc(window, max_width, time_format);
 }
 
 fn usageCellFullTextAlloc(
     allocator: std.mem.Allocator,
     window: ?registry.RateLimitWindow,
     usage_override: ?[]const u8,
+    time_format: clock.TimeFormat,
 ) ![]u8 {
     if (usage_override) |value| return allocator.dupe(u8, value);
-    return formatRateLimitFullAlloc(window);
+    return rate_limit.formatRateLimitFullWithFormatAlloc(window, time_format);
 }
 
 fn creditsCellAlloc(
@@ -109,6 +112,8 @@ fn resetCreditsCellAlloc(
     allocator: std.mem.Allocator,
     usage: ?registry.RateLimitSnapshot,
     usage_override: ?[]const u8,
+    time_format: clock.TimeFormat,
+    max_width: usize,
 ) ![]u8 {
     if (usage_override) |value| return allocator.dupe(u8, value);
     const count = if (usage) |snapshot| snapshot.reset_credits else null;
@@ -116,9 +121,11 @@ fn resetCreditsCellAlloc(
         if (value > 0) {
             if (usage.?.reset_credits_expires_at) |expires_at| {
                 if (expires_at > std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds()) {
-                    const expiry = try rate_limit.formatExpiryAlloc(allocator, expires_at);
+                    const expiry = try rate_limit.formatExpiryAlloc(allocator, expires_at, time_format);
                     defer allocator.free(expiry);
-                    return std.fmt.allocPrint(allocator, "{d} (exp {s})", .{ value, expiry });
+                    const text = try std.fmt.allocPrint(allocator, "{d} (exp {s})", .{ value, expiry });
+                    if (max_width == 0 or text.len <= max_width) return text;
+                    allocator.free(text);
                 }
             }
         }
@@ -174,11 +181,11 @@ pub fn writeAccountsTableWithUsageOverrides(
             const usage_override = usageOverrideForAccount(usage_overrides, account_idx);
             const credits_str = try creditsCellAlloc(std.heap.page_allocator, rec.last_usage, usage_override);
             defer std.heap.page_allocator.free(credits_str);
-            const reset_credits_str = try resetCreditsCellAlloc(std.heap.page_allocator, rec.last_usage, usage_override);
+            const reset_credits_str = try resetCreditsCellAlloc(std.heap.page_allocator, rec.last_usage, usage_override, reg.time_format, 0);
             defer std.heap.page_allocator.free(reset_credits_str);
-            const rate_5h_str = try usageCellFullTextAlloc(std.heap.page_allocator, rate_5h, usage_override);
+            const rate_5h_str = try usageCellFullTextAlloc(std.heap.page_allocator, rate_5h, usage_override, reg.time_format);
             defer std.heap.page_allocator.free(rate_5h_str);
-            const rate_week_str = try usageCellFullTextAlloc(std.heap.page_allocator, rate_week, usage_override);
+            const rate_week_str = try usageCellFullTextAlloc(std.heap.page_allocator, rate_week, usage_override, reg.time_format);
             defer std.heap.page_allocator.free(rate_week_str);
             const last_str = try timefmt.formatRelativeTimeOrDashAlloc(std.heap.page_allocator, rec.last_usage_at, now);
             defer std.heap.page_allocator.free(last_str);
@@ -243,11 +250,11 @@ pub fn writeAccountsTableWithUsageOverrides(
             const usage_override = usageOverrideForAccount(usage_overrides, account_idx);
             const credits_str = try creditsCellAlloc(std.heap.page_allocator, rec.last_usage, usage_override);
             defer std.heap.page_allocator.free(credits_str);
-            const reset_credits_str = try resetCreditsCellAlloc(std.heap.page_allocator, rec.last_usage, usage_override);
+            const reset_credits_str = try resetCreditsCellAlloc(std.heap.page_allocator, rec.last_usage, usage_override, reg.time_format, widths[3]);
             defer std.heap.page_allocator.free(reset_credits_str);
-            const rate_5h_str = try usageCellTextAlloc(std.heap.page_allocator, rate_5h, widths[4], usage_override);
+            const rate_5h_str = try usageCellTextAlloc(std.heap.page_allocator, rate_5h, widths[4], usage_override, reg.time_format);
             defer std.heap.page_allocator.free(rate_5h_str);
-            const rate_week_str = try usageCellTextAlloc(std.heap.page_allocator, rate_week, widths[5], usage_override);
+            const rate_week_str = try usageCellTextAlloc(std.heap.page_allocator, rate_week, widths[5], usage_override, reg.time_format);
             defer std.heap.page_allocator.free(rate_week_str);
             const last = try timefmt.formatRelativeTimeOrDashAlloc(std.heap.page_allocator, rec.last_usage_at, now);
             defer std.heap.page_allocator.free(last);

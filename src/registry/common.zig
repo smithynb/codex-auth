@@ -141,6 +141,7 @@ pub const Registry = struct {
     active_account_activated_at_ms: ?i64,
     api: ApiConfig,
     live: LiveConfig = defaultLiveConfig(),
+    time_format: @import("../time/clock.zig").TimeFormat = .@"24h",
     accounts: std.ArrayList(AccountRecord),
 
     pub fn deinit(self: *Registry, allocator: std.mem.Allocator) void {
