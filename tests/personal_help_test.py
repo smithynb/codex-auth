@@ -15,13 +15,13 @@ def check(output, colored):
     plain = re.sub(r'\x1b\[[0-9;]*m', '', text)
     assert plain.index('Personal commands:') < plain.index('codex-auth 0.'), repr(text)
     assert plain.count('Personal commands:') == 1, text
-    assert 'alias: tickle' in plain, text
+    assert 'aliases: tickle, ping' in plain, text
     if colored:
         assert '\x1b[1;35mPersonal commands:\x1b[0m' in text, repr(text)
         assert '\x1b[35mpoke\x1b[0m' in text, repr(text)
     else:
         # The upstream native binary controls its own color policy.
-        personal = text[:text.index('(alias: tickle)') + len('(alias: tickle)')]
+        personal = text[:text.index('(aliases: tickle, ping)') + len('(aliases: tickle, ping)')]
         assert '\x1b[' not in personal, repr(personal)
 
 

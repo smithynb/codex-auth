@@ -44,6 +44,7 @@ export function buildPokeInvocation(home, model, baseEnv) {
 
 export const pokeHelp = `Usage: codex-auth poke [--dry-run] [--model <name>] [--timeout <seconds>]
        codex-auth tickle [options]
+       codex-auth ping [options]
 
 Send ping! sequentially only to ChatGPT accounts with an unstarted five-hour window.
 Checks fresh API usage, requiring an unused reset exactly five hours away to the minute.

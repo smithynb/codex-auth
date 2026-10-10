@@ -1,13 +1,14 @@
-# `codex-auth poke` / `codex-auth tickle`
+# `codex-auth poke` / `codex-auth tickle` / `codex-auth ping`
 
 ## Usage
 
 ```shell
 codex-auth poke [--dry-run] [--model <name>] [--timeout <seconds>]
 codex-auth tickle [options]
+codex-auth ping [options]
 ```
 
-Both aliases behave identically. Top-level help pins personal commands above the
+All aliases behave identically. Top-level help pins personal commands above the
 native command list, using magenta in terminals (plain text when redirected or
 when `NO_COLOR` is set).
 
@@ -38,7 +39,7 @@ when `NO_COLOR` is set).
 - **Requests consume usage.** Each ping is a real model request. OpenAI controls whether a five-hour usage window starts, resets, or remains unchanged.
 - **No tools or actions.** The developer instruction asks the model to reply `pong` only. Read-only sandboxing and ephemeral isolation are applied, but this is not an API-level guarantee that the model cannot attempt a tool call.
 - **Auth refresh persistence.** If Codex refreshes authentication tokens during a session, refreshed credentials for the same identity are saved back to your account store. Credentials with a changed identity are rejected. A changed source snapshot detected before import is not overwritten. That check is not atomic against unrelated native writers; avoid switching, importing, or refreshing the same accounts concurrently.
-- **Exclusive lock.** Only one poke/tickle runs at a time per `CODEX_HOME`. A stale lock after `SIGKILL` or power loss must be verified and removed manually from `~/.codex/accounts/.poke.lock`.
+- **Exclusive lock.** Only one poke/tickle/ping runs at a time per `CODEX_HOME`. A stale lock after `SIGKILL` or power loss must be verified and removed manually from `~/.codex/accounts/.poke.lock`.
 - **Cleanup.** Temporary credential directories are removed on normal completion, failure, timeout, `SIGINT`, and `SIGTERM`. `SIGKILL` and power loss cannot guarantee cleanup; check your system temp directory.
 
 ## Exit Codes

@@ -398,10 +398,10 @@ test('rejects a second overlapping poke', async t => {
   assert.match(result.output, /Another poke/);
 });
 
-test('both aliases dispatch to the same poke and never trigger daemon restart', async t => {
+test('all aliases dispatch to the same poke and never trigger daemon restart', async t => {
   const h = await makeHarness(t);
   const launcher = await h.launcher();
-  for (const alias of ['poke', 'tickle']) {
+  for (const alias of ['poke', 'tickle', 'ping']) {
     // Clean call log between aliases.
     const log = h.env.POKE_FIXTURE_LOG;
     try { await fs.unlink(log); } catch {}

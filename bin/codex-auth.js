@@ -113,13 +113,13 @@ async function offerDaemonRestart() {
 
 const argv = process.argv.slice(2);
 
-// Personal commands: poke/tickle ping accounts and are handled entirely in Node.
-if (['poke', 'tickle'].includes(argv[0])) {
+// Personal commands: poke/tickle/ping ping accounts and are handled entirely in Node.
+if (['poke', 'tickle', 'ping'].includes(argv[0])) {
   const { runPoke } = await import('./personal-poke.mjs');
   const binaryPath = resolveBinary();
   process.exit(await runPoke({ binaryPath, argv: argv.slice(1) }));
 }
-if (argv[0] === 'help' && ['poke', 'tickle'].includes(argv[1])) {
+if (argv[0] === 'help' && ['poke', 'tickle', 'ping'].includes(argv[1])) {
   const { pokeHelp } = await import('./personal-poke.mjs');
   process.stdout.write(pokeHelp);
   process.exit(0);
@@ -135,7 +135,7 @@ function personalHelpBlock() {
   return (
     `${m}Personal commands:${r}\n` +
     `  ${c}poke${r} [--dry-run] [--model <name>] [--timeout <secs>]\n` +
-    `      ${d}Ping unstarted five-hour windows; skip active ones (alias: tickle)${r}\n`
+    `      ${d}Ping unstarted five-hour windows; skip active ones (aliases: tickle, ping)${r}\n`
   );
 }
 
