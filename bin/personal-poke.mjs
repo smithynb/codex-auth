@@ -48,7 +48,8 @@ export const pokeHelp = `Usage: codex-auth poke [--dry-run] [--model <name>] [--
 
 Send ping! sequentially only to ChatGPT accounts with an unstarted five-hour window.
 Checks fresh API usage, requiring an unused reset exactly five hours away to the minute.
-Other accounts print (skipped). Unavailable or stale usage is never pinged.
+Active or unverified accounts print (skipped). Failed usage checks count as failures.
+Unavailable or stale usage is never pinged.
 Default: gpt-6-luna, low reasoning, 120-second timeout per process.
 API-key accounts are skipped. Your active account and daemon are not switched.
 Requests consume usage; OpenAI controls whether a five-hour window starts.
@@ -204,6 +205,7 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
     const nativeEnv = { ...env, CODEX_HOME: home };
     await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), { mode: 0o600 });
     let eligibleAccounts;
+    let failedUsageChecks;
     try {
       const listed = await runChild(binaryPath, ['list', '--api', '--json'], {
         ...childOptions, env: nativeEnv, captureStdout: true,
@@ -219,6 +221,9 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
       eligibleAccounts = new Set(listing.accounts
         .filter(account => hasUnstartedFiveHourWindow(account, checkedAt))
         .map(account => account.account_key));
+      failedUsageChecks = new Map(listing.accounts
+        .filter(account => ['http_error', 'missing_auth', 'error'].includes(account.usage?.refresh?.status))
+        .map(account => [account.account_key, account.usage.refresh]));
     } catch {
       stderr.write('Could not check five-hour resets; no pings were sent.\n');
       return interrupted || 1;
@@ -237,6 +242,14 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
       try { bytes = await fs.readFile(path.join(exportDir, name)); identity = authIdentity(bytes); }
       catch { failed++; stderr.write(`Account ${index + 1}: FAILED (invalid saved auth).\n`); continue; }
       if (!identity) { skipped++; stdout.write(`Account ${index + 1}: SKIPPED (API-key account).\n`); continue; }
+      const usageFailure = failedUsageChecks.get(identity.key);
+      if (usageFailure) {
+        failed++;
+        const detail = [usageFailure.http_status, usageFailure.error_code || usageFailure.status]
+          .filter(value => value != null).join(' ');
+        stderr.write(`${identity.label}: FAILED (usage check: ${detail}).\n`);
+        continue;
+      }
       if (!eligibleAccounts.has(identity.key)) {
         skipped++;
         stdout.write(`${identity.label}: (skipped)\n`);

@@ -15,7 +15,8 @@ when `NO_COLOR` is set).
 ## Behavior
 
 - Checks fresh API usage, then sends `ping!` sequentially only to stored ChatGPT accounts with an unstarted five-hour window.
-- A window is eligible when usage is zero and its reset is exactly five hours away, compared to the minute. Accounts with active windows, stale usage, or failed usage refreshes print `(skipped)`.
+- A window is eligible when usage is zero and its reset is exactly five hours away, compared to the minute. Accounts with active windows or unverified usage print `(skipped)`.
+- Failed usage refreshes, including expired tokens, print `FAILED` with the HTTP status and error code when available. They count as failures and cause exit code `1`, including during dry runs. No ping is sent for those accounts.
 - If the usage check fails entirely, no pings are sent.
 - Default model: `gpt-6-luna`; reasoning effort: `low`.
 - Each account receives an isolated, ephemeral, read-only Codex session.

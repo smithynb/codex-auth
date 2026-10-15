@@ -298,13 +298,49 @@ test('rejects missing or non-string access tokens before requesting a model', as
   await h.unchanged();
 });
 
+test('expired tokens fail instead of being skipped, including in dry runs', async t => {
+  for (const argv of [[], ['--dry-run']]) {
+    const refresh = { requested: true, status: 'http_error', method: 'api',
+      http_status: 401, error_code: 'token_expired' };
+    const h = await makeHarness(t, { usage: {
+      a: { source: 'cache', refresh }, b: { source: 'none', primary: null, refresh },
+    } });
+    const result = await h.run(argv);
+    assert.equal(result.status, 1, result.output);
+    assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
+    for (const id of ['a', 'b']) {
+      assert.ok(result.output.includes(`${id}***@e***.invalid (${id}): FAILED (usage check: 401 token_expired).\n`), result.output);
+    }
+    assert.match(result.output, /0 succeeded, 2 failed, 0 skipped/);
+    await h.unchanged();
+  }
+});
+
+test('usage refresh errors fail the account and allow later accounts to run', async t => {
+  for (const refresh of [
+    { status: 'http_error', http_status: 429, error_code: null },
+    { status: 'error', http_status: null, error_code: 'ConnectionRefused' },
+    { status: 'missing_auth', http_status: null, error_code: null },
+  ]) {
+    const h = await makeHarness(t, { usage: {
+      a: { source: 'cache', refresh: { requested: true, method: 'api', ...refresh } },
+    } });
+    const result = await h.run();
+    assert.equal(result.status, 1, result.output);
+    assert.deepEqual(result.calls.filter(c => c.type === 'exec').map(c => c.id), ['b']);
+    assert.match(result.output, /1 succeeded, 1 failed, 0 skipped/);
+    assert.ok(result.output.includes(refresh.error_code || refresh.status), result.output);
+    await h.unchanged();
+  }
+});
+
 test('only pings unstarted windows and prints (skipped) for active or unverified accounts', async t => {
   const h = await makeHarness(t, { accounts: {
     a: fixtureAuth('a'), b: fixtureAuth('b'), c: fixtureAuth('c'), d: fixtureAuth('d'),
     e: fixtureAuth('e'), f: fixtureAuth('f'),
   }, usage: {
     a: { primary: { used_percent: 0, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 17800 } },
-    c: { source: 'cache', refresh: { requested: true, status: 'http_error', method: 'api' } },
+    c: { source: 'cache', refresh: { requested: false, status: 'not_requested', method: null } },
     d: { primary: null },
     e: { primary: { used_percent: 1, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 18000 } },
   }, missingUsage: ['f'] });
