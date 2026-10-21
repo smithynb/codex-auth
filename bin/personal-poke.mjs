@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 export function parsePokeArgs(argv) {
   const options = { model: 'gpt-6-luna', timeoutSeconds: 120, dryRun: false, help: false };
@@ -48,8 +49,8 @@ export const pokeHelp = `Usage: codex-auth poke [--dry-run] [--model <name>] [--
 
 Send ping! sequentially only to ChatGPT accounts with an unstarted five-hour window.
 Checks fresh API usage, requiring an unused reset exactly five hours away to the minute.
-Active or unverified accounts print (skipped). Failed usage checks count as failures.
-Unavailable or stale usage is never pinged.
+Accounts with an active window or unconfirmed usage print (skipped).
+Failed usage checks and missing saved auth print FAILED and count as failures.
 Default: gpt-6-luna, low reasoning, 120-second timeout per process.
 API-key accounts are skipped. Your active account and daemon are not switched.
 Requests consume usage; OpenAI controls whether a five-hour window starts.
@@ -76,6 +77,17 @@ function maskEmail(value) {
   return `${quote}${Array.from(localValue).slice(0, 3).join('')}***${quote}@${domainPrefix}***${suffix}`;
 }
 
+// Saved auth and server responses must not inject terminal control sequences.
+function printable(value) {
+  return String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+}
+
+// Mirrors the native accountSnapshotFileName encoding.
+function snapshotFileName(accountKey) {
+  const plain = /^[A-Za-z0-9._-]+$/.test(accountKey) && accountKey !== '.' && accountKey !== '..';
+  return `${plain ? accountKey : Buffer.from(accountKey).toString('base64url')}.auth.json`;
+}
+
 function authIdentity(bytes) {
   const auth = JSON.parse(bytes.toString());
   if (auth.auth_mode === 'apikey' || (typeof auth.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY.trim())) {
@@ -94,7 +106,7 @@ function authIdentity(bytes) {
   const label = typeof claims.email === 'string' ? maskEmail(claims.email) : user;
   return {
     key: `${user}::${account}`,
-    label: `${label} (${account})`.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 160),
+    label: printable(`${label} (${account})`).slice(0, 160),
   };
 }
 
@@ -108,6 +120,33 @@ export function hasUnstartedFiveHourWindow(account, nowSeconds) {
   return window.used_percent === 0
     && Number.isSafeInteger(window.resets_at)
     && Math.floor(window.resets_at / 60) === Math.floor((nowSeconds + 18000) / 60);
+}
+
+// The next native command copies auth.json over the active account's snapshot,
+// so an imported rotation is lost unless auth.json receives it too.
+async function replaceActiveAuthIfUnchanged(home, original, updated) {
+  const activePath = path.join(home, 'auth.json');
+  async function stillOriginal() {
+    try { return (await fs.readFile(activePath)).equals(original); }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  }
+  if (!(await stillOriginal())) return;
+  // An unpredictable name created exclusively cannot be redirected through a planted symlink.
+  const temp = path.join(home, `.auth.json.poke-${randomUUID()}`);
+  try {
+    await fs.writeFile(temp, updated, { mode: 0o600, flag: 'wx' });
+    // Native writers take no lock, so re-check just before the rename to keep the race window small.
+    if (await stillOriginal()) await fs.rename(temp, activePath);
+  } finally {
+    await fs.rm(temp, { force: true });
+  }
+}
+
+// Failed refreshes are errors; no_data, not_requested, and cached usage stay unconfirmed.
+function classifyUsage(account, nowSeconds) {
+  const refresh = account?.usage?.refresh;
+  if (['http_error', 'missing_auth', 'error'].includes(refresh?.status)) return { failure: refresh };
+  return { eligible: hasUnstartedFiveHourWindow(account, nowSeconds) };
 }
 
 function runChild(command, args, { timeoutSeconds, abortSignal, captureStdout = false, ...options }) {
@@ -173,7 +212,8 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
 
   const home = path.resolve(env.CODEX_HOME || path.join(os.homedir(), '.codex'));
   const accountsDir = path.join(home, 'accounts');
-  const lock = path.join(accountsDir, '.poke.lock');
+  // Native clean deletes unrecognized entries under accounts/, so the lock lives beside it.
+  const lock = path.join(home, 'codex-auth-poke.lock');
   let locked = false;
   let staging;
   let succeeded = 0;
@@ -189,9 +229,13 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
   process.on('SIGTERM', interrupt);
   const childOptions = { timeoutSeconds: options.timeoutSeconds, abortSignal: controller.signal };
   try {
-    try { await fs.mkdir(lock, { mode: 0o700 }); locked = true; }
+    try { await fs.access(accountsDir); }
     catch (error) {
       if (error.code === 'ENOENT') { stdout.write('No stored accounts.\n'); return 0; }
+      throw error;
+    }
+    try { await fs.mkdir(lock, { mode: 0o700 }); locked = true; }
+    catch (error) {
       if (error.code === 'EEXIST') {
         stderr.write(`Another poke may be running. Check ${lock}; remove a stale lock only after verifying no poke is active.\n`);
         return 1;
@@ -200,57 +244,54 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
     }
     staging = await fs.mkdtemp(path.join(env.TMPDIR || os.tmpdir(), 'codex-auth-poke-'));
     await fs.chmod(staging, 0o700);
-    const exportDir = path.join(staging, 'export');
-    await fs.mkdir(exportDir, { mode: 0o700 });
     const nativeEnv = { ...env, CODEX_HOME: home };
     await fs.writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), { mode: 0o600 });
-    let eligibleAccounts;
-    let failedUsageChecks;
+    let listing;
+    let usageByAccount;
     try {
       const listed = await runChild(binaryPath, ['list', '--api', '--json'], {
         ...childOptions, env: nativeEnv, captureStdout: true,
       });
       if (interrupted) return interrupted;
       if (listed.status !== 0) throw new Error('Listing failed');
-      const listing = JSON.parse(listed.stdout);
+      listing = JSON.parse(listed.stdout);
       if (listing.schema_version !== 1 || listing.command !== 'list' || !Array.isArray(listing.accounts)) {
         throw new Error('Invalid listing');
       }
       // Evaluate the snapshot once; sequential pings must not age out idle accounts.
       const checkedAt = Math.floor(now() / 1000);
-      eligibleAccounts = new Set(listing.accounts
-        .filter(account => hasUnstartedFiveHourWindow(account, checkedAt))
-        .map(account => account.account_key));
-      failedUsageChecks = new Map(listing.accounts
-        .filter(account => ['http_error', 'missing_auth', 'error'].includes(account.usage?.refresh?.status))
-        .map(account => [account.account_key, account.usage.refresh]));
+      usageByAccount = new Map(listing.accounts
+        .map(account => [account.account_key, classifyUsage(account, checkedAt)]));
     } catch {
       stderr.write('Could not check five-hour resets; no pings were sent.\n');
       return interrupted || 1;
     }
-    // Usage refresh can rotate credentials, so export only after the check.
-    const exported = await runChild(binaryPath, ['export', exportDir], { ...childOptions, env: nativeEnv });
-    if (interrupted) return interrupted;
-    if (exported.status !== 0) { stderr.write('Could not export saved accounts; no pings were sent.\n'); return 1; }
-    const files = (await fs.readdir(exportDir)).filter(name => name.endsWith('.auth.json')).sort();
     stdout.write(`${options.dryRun ? 'Dry run' : 'Poking'}: ${options.model}, low reasoning, message ping!\n`);
-    for (const [index, name] of files.entries()) {
+    for (const [index, account] of listing.accounts.entries()) {
       if (interrupted) break;
-      await fs.chmod(path.join(exportDir, name), 0o600);
+      // Usage refresh can rotate credentials, so read each snapshot only after the check.
+      let name;
       let bytes;
       let identity;
-      try { bytes = await fs.readFile(path.join(exportDir, name)); identity = authIdentity(bytes); }
-      catch { failed++; stderr.write(`Account ${index + 1}: FAILED (invalid saved auth).\n`); continue; }
-      if (!identity) { skipped++; stdout.write(`Account ${index + 1}: SKIPPED (API-key account).\n`); continue; }
-      const usageFailure = failedUsageChecks.get(identity.key);
-      if (usageFailure) {
+      try {
+        name = snapshotFileName(account.account_key);
+        bytes = await fs.readFile(path.join(accountsDir, name));
+        identity = authIdentity(bytes);
+      } catch (error) {
         failed++;
-        const detail = [usageFailure.http_status, usageFailure.error_code || usageFailure.status]
-          .filter(value => value != null).join(' ');
-        stderr.write(`${identity.label}: FAILED (usage check: ${detail}).\n`);
+        stderr.write(`Account ${index + 1}: FAILED (${error.code === 'ENOENT' ? 'missing' : 'invalid'} saved auth).\n`);
         continue;
       }
-      if (!eligibleAccounts.has(identity.key)) {
+      if (!identity) { skipped++; stdout.write(`Account ${index + 1}: SKIPPED (API-key account).\n`); continue; }
+      const usage = usageByAccount.get(identity.key);
+      if (usage?.failure) {
+        failed++;
+        const detail = [usage.failure.http_status, usage.failure.error_code || usage.failure.status]
+          .filter(value => value != null).join(' ');
+        stderr.write(`${identity.label}: FAILED (usage check: ${printable(detail)}).\n`);
+        continue;
+      }
+      if (!usage?.eligible) {
         skipped++;
         stdout.write(`${identity.label}: (skipped)\n`);
         continue;
@@ -271,6 +312,10 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
           } else if (!(await fs.readFile(path.join(accountsDir, name))).equals(bytes)) {
             refreshFailure = 'source credentials changed concurrently; not overwritten';
           } else {
+            // A failed auth.json update must not also discard the snapshot copy.
+            let activeFailure;
+            try { await replaceActiveAuthIfUnchanged(home, bytes, updated); }
+            catch { activeFailure = 'could not update active auth.json; refreshed snapshot may be overwritten'; }
             const refreshDir = path.join(staging, `refresh-${index}`);
             await fs.mkdir(refreshDir, { mode: 0o700 });
             await fs.writeFile(path.join(refreshDir, name), updated, { mode: 0o600 });
@@ -279,7 +324,7 @@ export async function runPoke({ binaryPath, argv, env = process.env, stdout = pr
             const imported = await runChild(binaryPath, ['import', refreshDir], {
               env: nativeEnv, timeoutSeconds: Math.min(options.timeoutSeconds, 5),
             });
-            if (imported.status !== 0) refreshFailure = 'could not save refreshed auth; check account login';
+            refreshFailure = imported.status !== 0 ? 'could not save refreshed auth; check account login' : activeFailure;
           }
         }
       } catch { refreshFailure = 'could not validate or save refreshed auth'; }

@@ -85,6 +85,11 @@ function fixtureAuth(id, changes = {}, email = `${id}@example.invalid`) {
   }, ...changes };
 }
 
+// Native snapshot names base64url-encode account keys that contain "::".
+function snapshotName(id) {
+  return `${Buffer.from(`fixture-user::${id}`).toString('base64url')}.auth.json`;
+}
+
 async function makeHarness(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'poke-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -92,13 +97,17 @@ async function makeHarness(t, options = {}) {
   const tools = path.join(root, 'tools');
   await fs.mkdir(path.join(home, 'accounts'), { recursive: true });
   await fs.mkdir(tools);
-  const active = JSON.stringify(fixtureAuth('active'));
-  const registry = JSON.stringify({ active_account_key: 'fixture-user::active', fixture: true });
+  const accounts = options.accounts ?? { a: fixtureAuth('a'), b: fixtureAuth('b') };
+  const activeId = options.activeAccount ?? 'active';
+  // An active stored account has an auth.json identical to its snapshot.
+  const active = JSON.stringify(accounts[activeId] ?? fixtureAuth(activeId));
+  const registry = JSON.stringify({ active_account_key: `fixture-user::${activeId}`, fixture: true });
   await fs.writeFile(path.join(home, 'auth.json'), active);
   await fs.writeFile(path.join(home, 'accounts', 'registry.json'), registry);
-  const accounts = options.accounts ?? { a: fixtureAuth('a'), b: fixtureAuth('b') };
-  for (const [name, auth] of Object.entries(accounts)) {
-    await fs.writeFile(path.join(home, 'accounts', `${name}.auth.json`),
+  for (const [id, auth] of Object.entries(accounts)) {
+    // null registers the account without a saved snapshot.
+    if (auth === null) continue;
+    await fs.writeFile(path.join(home, 'accounts', snapshotName(id)),
       typeof auth === 'string' ? auth : JSON.stringify(auth), { mode: 0o600 });
   }
   const config = path.join(root, 'config.json');
@@ -119,21 +128,17 @@ log({type: command, home: process.env.CODEX_HOME, destination});
 if (command === 'list') {
   if (config.listFail) { console.error('fixture-refresh-a'); process.exit(9); }
   if (config.listInvalid) { console.log('invalid-json'); process.exit(0); }
-  const now = config.nowSeconds;
+  // Launcher runs read the real clock, so their fixture must too.
+  const now = config.realClock ? Math.floor(Date.now() / 1000) : config.nowSeconds;
   const accounts = config.accounts ?? { a: {}, b: {} };
   console.log(JSON.stringify({ schema_version: 1, command: 'list', accounts:
-    Object.keys(accounts).map(id => ({ account_key: 'fixture-user::' + id, usage: {
-      source: 'api', refresh: { requested: true, status: 'ok', method: 'api' },
-      primary: { used_percent: 0, window_minutes: 300, resets_at: now + 18000 },
-      ...config.usage?.[id],
-    } })).filter(a => !config.missingUsage?.includes(a.account_key.split('::')[1]))
+    Object.keys(accounts).map(id => ({ account_key: 'fixture-user::' + id,
+      usage: config.missingUsage?.includes(id) ? null : {
+        source: 'api', refresh: { requested: true, status: 'ok', method: 'api' },
+        primary: { used_percent: 0, window_minutes: 300, resets_at: now + 18000 },
+        ...config.usage?.[id],
+      } }))
   }));
-} else if (command === 'export') {
-  if (config.exportFail) { console.error('fixture-refresh-a'); process.exit(9); }
-  fs.mkdirSync(destination, {recursive: true});
-  for (const name of fs.readdirSync(path.join(source, 'accounts')).filter(n => n.endsWith('.auth.json'))) {
-    fs.copyFileSync(path.join(source, 'accounts', name), path.join(destination, name));
-  }
 } else if (command === 'import') {
   if (config.importFail) process.exit(9);
   for (const name of fs.readdirSync(destination)) fs.copyFileSync(path.join(destination, name), path.join(source, 'accounts', name));
@@ -146,22 +151,32 @@ const home = process.env.CODEX_HOME;
 const authPath = path.join(home, 'auth.json');
 const auth = JSON.parse(fs.readFileSync(authPath));
 const id = auth.tokens.account_id;
+const behavior = config.behavior?.[id] ?? {};
+if (behavior.clean) {
+  // Mirrors the native clean whitelist for entries under accounts/.
+  const accountsDir = path.join(source, 'accounts');
+  for (const entry of fs.readdirSync(accountsDir)) {
+    if (['registry.json', 'backups', 'backup'].includes(entry) || entry.endsWith('.auth.json')) continue;
+    fs.rmSync(path.join(accountsDir, entry), { recursive: true, force: true });
+  }
+}
 log({type: 'exec', id, args: process.argv.slice(2), home, cwd: process.cwd(),
   apiKey: process.env.OPENAI_API_KEY ?? null, codexKey: process.env.CODEX_API_KEY ?? null,
   baseUrl: process.env.OPENAI_BASE_URL ?? null,
   homeMode: fs.statSync(home).mode & 0o777, authMode: fs.statSync(authPath).mode & 0o777,
   projectFiles: fs.readdirSync(process.cwd()),
 });
-const behavior = config.behavior?.[id] ?? {};
 if (behavior.refresh) {
   auth.tokens.access_token = 'fixture-renewed-access';
   auth.tokens.refresh_token = 'fixture-renewed-refresh';
   if (behavior.wrongIdentity) auth.tokens.account_id = 'different-account';
   fs.writeFileSync(authPath, JSON.stringify(auth));
 }
+if (behavior.lockActiveAuth) fs.chmodSync(path.join(source, 'auth.json'), 0o000);
 if (behavior.changeSource) {
   const newer = {...auth, last_refresh: 'concurrent-newer-fixture'};
-  fs.writeFileSync(path.join(source, 'accounts', id + '.auth.json'), JSON.stringify(newer));
+  const name = Buffer.from('fixture-user::' + id).toString('base64url') + '.auth.json';
+  fs.writeFileSync(path.join(source, 'accounts', name), JSON.stringify(newer));
 }
 console.error(auth.tokens.refresh_token);
 if (behavior.delay) await new Promise(resolve => setTimeout(resolve, behavior.delay));
@@ -179,10 +194,9 @@ process.exit(behavior.fail ? 7 : 0);
   async function unchanged() {
     assert.equal(await fs.readFile(path.join(home, 'auth.json'), 'utf8'), active);
     assert.equal(await fs.readFile(path.join(home, 'accounts', 'registry.json'), 'utf8'), registry);
-    await assert.rejects(fs.stat(path.join(home, 'accounts', '.poke.lock')), { code: 'ENOENT' });
+    await assert.rejects(fs.stat(path.join(home, 'codex-auth-poke.lock')), { code: 'ENOENT' });
     for (const call of await calls()) {
       if (call.type === 'exec') await assert.rejects(fs.stat(call.home), { code: 'ENOENT' });
-      if (call.type === 'export') await assert.rejects(fs.stat(call.destination), { code: 'ENOENT' });
     }
   }
   async function run(argv = []) {
@@ -247,7 +261,7 @@ test('dry run has no Codex requests or refreshed-auth imports', async t => {
   const h = await makeHarness(t);
   const result = await h.run(['--dry-run']);
   assert.equal(result.status, 0);
-  assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
+  assert.deepEqual(result.calls.map(c => c.type), ['list']);
   assert.match(result.output, /would send ping!/);
   await h.unchanged();
 });
@@ -277,7 +291,7 @@ test('status labels mask email identity and domain without changing stored auth'
   for (const [index, [email, masked]] of cases.entries()) {
     assert.ok(!result.output.includes(email), result.output);
     assert.ok(result.output.includes(`${masked} (account-${index}): would send ping!\n`), result.output);
-    const saved = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', `account-${index}.auth.json`), 'utf8'));
+    const saved = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', snapshotName(`account-${index}`)), 'utf8'));
     assert.deepEqual(saved, accounts[`account-${index}`]);
   }
   await h.unchanged();
@@ -307,7 +321,7 @@ test('expired tokens fail instead of being skipped, including in dry runs', asyn
     } });
     const result = await h.run(argv);
     assert.equal(result.status, 1, result.output);
-    assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
+    assert.deepEqual(result.calls.map(c => c.type), ['list']);
     for (const id of ['a', 'b']) {
       assert.ok(result.output.includes(`${id}***@e***.invalid (${id}): FAILED (usage check: 401 token_expired).\n`), result.output);
     }
@@ -334,23 +348,34 @@ test('usage refresh errors fail the account and allow later accounts to run', as
   }
 });
 
+test('usage error codes from the server cannot write terminal control characters', async t => {
+  const h = await makeHarness(t, { usage: { a: { source: 'cache', refresh: {
+    requested: true, method: 'api', status: 'http_error', http_status: 400, error_code: '\x1b]0;title\x07bad\x9b31m',
+  } } } });
+  const result = await h.run(['--dry-run']);
+  assert.equal(result.status, 1, result.output);
+  assert.ok(!/[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(result.output), JSON.stringify(result.output));
+  assert.ok(result.output.includes('(a): FAILED (usage check: 400 ]0;titlebad31m).\n'), result.output);
+});
+
 test('only pings unstarted windows and prints (skipped) for active or unverified accounts', async t => {
   const h = await makeHarness(t, { accounts: {
     a: fixtureAuth('a'), b: fixtureAuth('b'), c: fixtureAuth('c'), d: fixtureAuth('d'),
-    e: fixtureAuth('e'), f: fixtureAuth('f'),
+    e: fixtureAuth('e'), f: fixtureAuth('f'), g: fixtureAuth('g'),
   }, usage: {
     a: { primary: { used_percent: 0, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 17800 } },
     c: { source: 'cache', refresh: { requested: false, status: 'not_requested', method: null } },
     d: { primary: null },
     e: { primary: { used_percent: 1, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 18000 } },
+    g: { refresh: { requested: true, status: 'no_data', method: 'api' } },
   }, missingUsage: ['f'] });
   const result = await h.run();
   assert.equal(result.status, 0, result.output);
   assert.deepEqual(result.calls.filter(c => c.type === 'exec').map(c => c.id), ['b']);
-  for (const id of ['a', 'c', 'd', 'e', 'f']) {
+  for (const id of ['a', 'c', 'd', 'e', 'f', 'g']) {
     assert.ok(result.output.includes(`${id}***@e***.invalid (${id}): (skipped)\n`), result.output);
   }
-  assert.match(result.output, /1 succeeded, 0 failed, 5 skipped/);
+  assert.match(result.output, /1 succeeded, 0 failed, 6 skipped/);
   assert.deepEqual(result.calls[0], { type: 'list', home: h.home, destination: '--api' });
   await h.unchanged();
 });
@@ -361,7 +386,7 @@ test('dry run also filters active windows without model requests', async t => {
   } });
   const result = await h.run(['--dry-run']);
   assert.equal(result.status, 0, result.output);
-  assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
+  assert.deepEqual(result.calls.map(c => c.type), ['list']);
   assert.ok(result.output.includes('a***@e***.invalid (a): (skipped)\n'));
   assert.ok(!result.output.includes('a***@e***.invalid (a): would send ping!'));
   assert.ok(result.output.includes('b***@e***.invalid (b): would send ping!'));
@@ -379,11 +404,15 @@ test('failed or malformed usage listing stops before any model request', async t
   }
 });
 
-test('export failure stops before any model request and hides child diagnostics', async t => {
-  const h = await makeHarness(t, { exportFail: true });
+test('a missing saved snapshot fails only that account', async t => {
+  const h = await makeHarness(t, { accounts: { a: fixtureAuth('a'), m: null }, usage: {
+    m: { source: 'none', primary: null, refresh: { requested: true, status: 'missing_auth', method: 'api' } },
+  } });
   const result = await h.run();
-  assert.equal(result.status, 1);
-  assert.deepEqual(result.calls.map(c => c.type), ['list', 'export']);
+  assert.equal(result.status, 1, result.output);
+  assert.deepEqual(result.calls.filter(c => c.type === 'exec').map(c => c.id), ['a']);
+  assert.ok(result.output.includes('Account 2: FAILED (missing saved auth).\n'), result.output);
+  assert.match(result.output, /1 succeeded, 1 failed, 0 skipped/);
   await h.unchanged();
 });
 
@@ -391,10 +420,45 @@ test('persists refreshed same-identity credentials even after a failed request',
   const h = await makeHarness(t, { behavior: { a: { refresh: true, fail: true } } });
   const result = await h.run();
   assert.equal(result.status, 1);
-  const refreshed = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', 'a.auth.json'), 'utf8'));
+  const refreshed = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', snapshotName('a')), 'utf8'));
   assert.equal(refreshed.tokens.refresh_token, 'fixture-renewed-refresh');
   assert.equal(result.calls.filter(c => c.type === 'import').length, 1);
   await h.unchanged();
+});
+
+test('refreshed credentials for the active account also replace auth.json', async t => {
+  const h = await makeHarness(t, { activeAccount: 'a', behavior: { a: { refresh: true } } });
+  const result = await h.run();
+  assert.equal(result.status, 0, result.output);
+  const activePath = path.join(h.home, 'auth.json');
+  const active = JSON.parse(await fs.readFile(activePath, 'utf8'));
+  assert.equal(active.tokens.refresh_token, 'fixture-renewed-refresh');
+  assert.equal((await fs.stat(activePath)).mode & 0o777, 0o600);
+  const saved = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', snapshotName('a')), 'utf8'));
+  assert.equal(saved.tokens.refresh_token, 'fixture-renewed-refresh');
+});
+
+test('active auth.json replacement does not follow a planted temporary-file symlink', async t => {
+  const h = await makeHarness(t, { activeAccount: 'a', behavior: { a: { refresh: true } } });
+  const decoy = path.join(h.root, 'decoy.txt');
+  await fs.writeFile(decoy, 'decoy');
+  await fs.symlink(decoy, path.join(h.home, `.auth.json.poke-${process.pid}`));
+  const result = await h.run();
+  assert.equal(result.status, 0, result.output);
+  assert.equal(await fs.readFile(decoy, 'utf8'), 'decoy');
+  const activePath = path.join(h.home, 'auth.json');
+  assert.ok((await fs.lstat(activePath)).isFile());
+  assert.equal(JSON.parse(await fs.readFile(activePath, 'utf8')).tokens.refresh_token, 'fixture-renewed-refresh');
+});
+
+test('a failed active auth.json update still saves the refreshed snapshot', async t => {
+  const h = await makeHarness(t, { activeAccount: 'a', behavior: { a: { refresh: true, lockActiveAuth: true } } });
+  const result = await h.run();
+  assert.equal(result.status, 1, result.output);
+  assert.equal(result.calls.filter(c => c.type === 'import').length, 1);
+  const saved = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', snapshotName('a')), 'utf8'));
+  assert.equal(saved.tokens.refresh_token, 'fixture-renewed-refresh');
+  assert.match(result.output, /could not update active auth\.json/);
 });
 
 test('rejects a changed auth identity rather than importing it', async t => {
@@ -402,7 +466,7 @@ test('rejects a changed auth identity rather than importing it', async t => {
   const result = await h.run();
   assert.equal(result.status, 1);
   assert.equal(result.calls.filter(c => c.type === 'import').length, 0);
-  const auth = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', 'a.auth.json'), 'utf8'));
+  const auth = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', snapshotName('a')), 'utf8'));
   assert.equal(auth.tokens.account_id, 'a');
   await h.unchanged();
 });
@@ -412,7 +476,7 @@ test('refuses to overwrite credentials changed concurrently in the source', asyn
   const result = await h.run();
   assert.equal(result.status, 1);
   assert.equal(result.calls.filter(c => c.type === 'import').length, 0);
-  const auth = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', 'a.auth.json'), 'utf8'));
+  const auth = JSON.parse(await fs.readFile(path.join(h.home, 'accounts', snapshotName('a')), 'utf8'));
   assert.equal(auth.last_refresh, 'concurrent-newer-fixture');
   await h.unchanged();
 });
@@ -428,14 +492,26 @@ test('bounds a hung account and still attempts the next account', async t => {
 
 test('rejects a second overlapping poke', async t => {
   const h = await makeHarness(t);
-  await fs.mkdir(path.join(h.home, 'accounts', '.poke.lock'));
+  await fs.mkdir(path.join(h.home, 'codex-auth-poke.lock'));
   const result = await h.run();
   assert.equal(result.status, 1);
   assert.match(result.output, /Another poke/);
 });
 
+test('native clean during a poke does not release the lock', async t => {
+  const h = await makeHarness(t, { behavior: { a: { clean: true, delay: 1500 } } });
+  const first = h.run();
+  for (let attempt = 0; attempt < 100 && !(await h.calls()).some(c => c.type === 'exec'); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const second = await h.run(['--dry-run']);
+  assert.equal(second.status, 1, second.output);
+  assert.match(second.output, /Another poke/);
+  assert.equal((await first).status, 0);
+});
+
 test('all aliases dispatch to the same poke and never trigger daemon restart', async t => {
-  const h = await makeHarness(t);
+  const h = await makeHarness(t, { realClock: true });
   const launcher = await h.launcher();
   for (const alias of ['poke', 'tickle', 'ping']) {
     // Clean call log between aliases.
