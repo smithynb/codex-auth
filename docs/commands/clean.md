@@ -11,6 +11,7 @@ codex-auth clean background
 
 - Cleans managed files under `~/.codex/accounts/`.
 - Keeps live account snapshot files referenced by `registry.json`.
+- Keeps `accounts/backup`, the default `export` destination.
 - Deletes stale managed snapshot files that are no longer referenced.
 - Prunes managed backup files according to the backup retention rules.
 

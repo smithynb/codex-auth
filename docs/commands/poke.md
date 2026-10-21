@@ -15,8 +15,10 @@ when `NO_COLOR` is set).
 ## Behavior
 
 - Checks fresh API usage, then sends `ping!` sequentially only to stored ChatGPT accounts with an unstarted five-hour window.
-- A window is eligible when usage is zero and its reset is exactly five hours away, compared to the minute. Accounts with active windows or unverified usage print `(skipped)`.
-- Failed usage refreshes, including expired tokens, print `FAILED` with the HTTP status and error code when available. They count as failures and cause exit code `1`, including during dry runs. No ping is sent for those accounts.
+- A window is eligible when usage is zero and its reset is exactly five hours away, compared to the minute.
+- Accounts print `(skipped)` when the window is active or the usage is unconfirmed. Usage is unconfirmed when the refresh returned no data, was not requested, or came from cached or local data instead of the API.
+- Failed usage refreshes print `FAILED` with the HTTP status and error code when available. A refresh fails on an HTTP error such as an expired token, on missing saved auth, or on a request error. Failures count toward exit code `1`, including during dry runs. No ping is sent for those accounts.
+- A registered account whose saved auth file is missing or unreadable prints `FAILED`. Later accounts still run.
 - If the usage check fails entirely, no pings are sent.
 - Default model: `gpt-6-luna`; reasoning effort: `low`.
 - Each account receives an isolated, ephemeral, read-only Codex session.
@@ -39,16 +41,16 @@ when `NO_COLOR` is set).
 
 - **Requests consume usage.** Each ping is a real model request. OpenAI controls whether a five-hour usage window starts, resets, or remains unchanged.
 - **No tools or actions.** The developer instruction asks the model to reply `pong` only. Read-only sandboxing and ephemeral isolation are applied, but this is not an API-level guarantee that the model cannot attempt a tool call.
-- **Auth refresh persistence.** If Codex refreshes authentication tokens during a session, refreshed credentials for the same identity are saved back to your account store. Credentials with a changed identity are rejected. A changed source snapshot detected before import is not overwritten. That check is not atomic against unrelated native writers; avoid switching, importing, or refreshing the same accounts concurrently.
-- **Exclusive lock.** Only one poke/tickle/ping runs at a time per `CODEX_HOME`. A stale lock after `SIGKILL` or power loss must be verified and removed manually from `~/.codex/accounts/.poke.lock`.
+- **Auth refresh persistence.** If Codex refreshes authentication tokens during a session, refreshed credentials for the same identity are saved back to your account store. When the refreshed account is active and `auth.json` still matches its saved snapshot, `auth.json` receives the refreshed credentials too. Credentials with a changed identity are rejected. A changed source snapshot detected before import is not overwritten, and `auth.json` is rechecked just before it is replaced. Neither check is atomic against native commands or Codex itself, which write without a lock. Avoid switching, importing, or refreshing the same accounts while a poke runs. If `auth.json` cannot be updated, the account reports `FAILED`. The refreshed snapshot is still saved, but the next native command may overwrite it with the older `auth.json`.
+- **Exclusive lock.** Only one poke/tickle/ping runs at a time per `CODEX_HOME`. A stale lock after `SIGKILL` or power loss must be verified and removed manually from `~/.codex/codex-auth-poke.lock`.
 - **Cleanup.** Temporary credential directories are removed on normal completion, failure, timeout, `SIGINT`, and `SIGTERM`. `SIGKILL` and power loss cannot guarantee cleanup; check your system temp directory.
 
 ## Exit Codes
 
 | Code | Meaning |
 |------|---------|
-| `0` | All eligible accounts succeeded, or dry-run/no-accounts |
-| `1` | One or more accounts failed |
+| `0` | No account failed: every eligible account succeeded, nothing was eligible, or no accounts are stored |
+| `1` | One or more accounts failed, including failed usage checks during a dry run |
 | `2` | Invalid command usage |
 | `130` | Interrupted by SIGINT |
 | `143` | Interrupted by SIGTERM |

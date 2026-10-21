@@ -63,6 +63,7 @@ When the removed account was active:
 - another remaining account is promoted when possible,
 - `auth.json` is rewritten from the promoted account when safe,
 - `auth.json` is deleted when no accounts remain and the current auth matches a tracked removed account,
+- an API-key `auth.json` matches a tracked account when its key digest matches that account, without an API request,
 - malformed or unsyncable `auth.json` is left untouched.
 
 After a successful deletion, stdout prints `Removed N account(s): ...` in removal order.
