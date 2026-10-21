@@ -41,6 +41,19 @@ pub fn apiKeyAccountNameAlloc(allocator: std.mem.Allocator, api_key: []const u8)
     return std.fmt.allocPrint(allocator, "sk-{s}***{s}", .{ hex[0..5], hex[hex.len - 4 ..] });
 }
 
+/// Matches the key digest written by `apiKeyAccountKeyAlloc` without calling `/v1/me` for the user id.
+pub fn findApiKeyAccountIndex(reg: *const Registry, api_key: []const u8) ?usize {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(api_key, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    for (reg.accounts.items, 0..) |rec, i| {
+        const key = rec.account_key;
+        if (!std.mem.startsWith(u8, key, "apikey::") or !std.mem.endsWith(u8, key, hex[0..])) continue;
+        if (std.mem.endsWith(u8, key[0 .. key.len - hex.len], "::")) return i;
+    }
+    return null;
+}
+
 pub fn findAccountIndexByAccountKey(reg: *const Registry, account_key: []const u8) ?usize {
     for (reg.accounts.items, 0..) |rec, i| {
         if (std.mem.eql(u8, rec.account_key, account_key)) return i;

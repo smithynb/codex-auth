@@ -1711,6 +1711,104 @@ test "Scenario: Given API key import when listing with api refresh then stale sn
     try std.testing.expectEqual(@as(f64, 66), refreshed_again.accounts.items[refreshed_again_api_idx].last_usage.?.secondary.?.used_percent);
 }
 
+test "Scenario: Given active API key auth when removing that account then auth json moves to the remaining account and the key is not re-imported" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+    try tmp.dir.makePath("imports");
+    try writeApiKeyFlowFakeCurl(gpa, tmp.dir, project_root);
+
+    const fake_curl_dir = try tmp.dir.realpathAlloc(gpa, "fake-curl-bin");
+    defer gpa.free(fake_curl_dir);
+    const path_override = try prependPathEntryAlloc(gpa, fake_curl_dir);
+    defer gpa.free(path_override);
+
+    const api_key = "sk-e2e-api-key-flow";
+    const api_auth = "{\"OPENAI_API_KEY\":\"sk-e2e-api-key-flow\"}";
+    try tmp.dir.writeFile(.{ .sub_path = "imports/api-key.json", .data = api_auth });
+    const import_path = try fs.path.join(gpa, &[_][]const u8{ home_root, "imports", "api-key.json" });
+    defer gpa.free(import_path);
+
+    const import_result = try runCliWithIsolatedHomeAndPathAndApiKeyCurl(
+        gpa,
+        project_root,
+        home_root,
+        path_override,
+        &[_][]const u8{ "import", import_path },
+    );
+    defer gpa.free(import_result.stdout);
+    defer gpa.free(import_result.stderr);
+    logRunResultIfFailed("api key import before remove", import_result);
+    try expectSuccess(import_result);
+
+    const codex_home = try codexHomeAlloc(gpa, home_root);
+    defer gpa.free(codex_home);
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), loaded.accounts.items.len);
+    const api_account_key = try gpa.dupe(u8, loaded.accounts.items[0].account_key);
+    defer gpa.free(api_account_key);
+
+    const chatgpt_email = "chatgpt-flow@example.com";
+    try fixtures.appendAccount(gpa, &loaded, chatgpt_email, "chatgpt", .plus);
+    const chatgpt_key = try fixtures.accountKeyForEmailAlloc(gpa, chatgpt_email);
+    defer gpa.free(chatgpt_key);
+    const chatgpt_snapshot_path = try registry.accountAuthPath(gpa, codex_home, chatgpt_key);
+    defer gpa.free(chatgpt_snapshot_path);
+    const chatgpt_auth = try fixtures.authJsonWithEmailPlan(gpa, chatgpt_email, "plus");
+    defer gpa.free(chatgpt_auth);
+    try registry.ensureAccountsDir(gpa, codex_home);
+    try fs.cwd().writeFile(.{ .sub_path = chatgpt_snapshot_path, .data = chatgpt_auth });
+    try registry.setActiveAccountKey(gpa, &loaded, api_account_key);
+    try registry.saveRegistry(gpa, codex_home, &loaded);
+
+    const auth_path = try fs.path.join(gpa, &[_][]const u8{ codex_home, "auth.json" });
+    defer gpa.free(auth_path);
+    try fs.cwd().writeFile(.{ .sub_path = auth_path, .data = api_auth });
+
+    const remove_result = try runCliWithIsolatedHomeAndPathAndApiKeyCurl(
+        gpa,
+        project_root,
+        home_root,
+        path_override,
+        &[_][]const u8{ "remove", "apikey-flow@example.com" },
+    );
+    defer gpa.free(remove_result.stdout);
+    defer gpa.free(remove_result.stderr);
+    logRunResultIfFailed("remove active api key account", remove_result);
+    try expectSuccess(remove_result);
+
+    const active_auth = try fixtures.readFileAlloc(gpa, auth_path);
+    defer gpa.free(active_auth);
+    try std.testing.expect(std.mem.indexOf(u8, active_auth, api_key) == null);
+    try std.testing.expectEqualStrings(chatgpt_auth, active_auth);
+
+    const list_result = try runCliWithIsolatedHomeAndPathAndApiKeyCurl(
+        gpa,
+        project_root,
+        home_root,
+        path_override,
+        &[_][]const u8{ "list", "--skip-api" },
+    );
+    defer gpa.free(list_result.stdout);
+    defer gpa.free(list_result.stderr);
+    logRunResultIfFailed("list after removing api key account", list_result);
+    try expectSuccess(list_result);
+
+    var after = try registry.loadRegistry(gpa, codex_home);
+    defer after.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 1), after.accounts.items.len);
+    try std.testing.expect(registry.findAccountIndexByAccountKey(&after, api_account_key) == null);
+    try std.testing.expectEqualStrings(chatgpt_key, after.active_account_key.?);
+}
+
 test "Scenario: Given single-file import missing email when running import then it exits non-zero after reporting the skipped file" {
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);

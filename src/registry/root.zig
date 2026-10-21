@@ -124,6 +124,7 @@ pub const accountFromAuth = account_ops.accountFromAuth;
 pub const accountFromApiKeyMe = account_ops.accountFromApiKeyMe;
 pub const apiKeyAccountKeyAlloc = account_ops.apiKeyAccountKeyAlloc;
 pub const apiKeyAccountNameAlloc = account_ops.apiKeyAccountNameAlloc;
+pub const findApiKeyAccountIndex = account_ops.findApiKeyAccountIndex;
 pub const upsertAccount = account_ops.upsertAccount;
 pub const loadRegistry = storage.loadRegistry;
 pub const saveRegistry = storage.saveRegistry;

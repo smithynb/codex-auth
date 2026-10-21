@@ -57,7 +57,7 @@ pub const CurrentAuthState = struct {
     }
 };
 
-pub fn loadCurrentAuthState(allocator: std.mem.Allocator, codex_home: []const u8) !CurrentAuthState {
+pub fn loadCurrentAuthState(allocator: std.mem.Allocator, codex_home: []const u8, reg: *const registry.Registry) !CurrentAuthState {
     const auth_path = try registry.activeAuthPath(allocator, codex_home);
     defer allocator.free(auth_path);
 
@@ -76,6 +76,19 @@ pub fn loadCurrentAuthState(allocator: std.mem.Allocator, codex_home: []const u8
         .missing = false,
     };
     defer info.deinit(allocator);
+
+    if (info.openai_api_key) |api_key| {
+        const idx = registry.findApiKeyAccountIndex(reg, api_key) orelse return .{
+            .record_key = null,
+            .syncable = false,
+            .missing = false,
+        };
+        return .{
+            .record_key = try allocator.dupe(u8, reg.accounts.items[idx].account_key),
+            .syncable = true,
+            .missing = false,
+        };
+    }
 
     const record_key = if (info.record_key) |key|
         try allocator.dupe(u8, key)

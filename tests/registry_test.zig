@@ -1451,6 +1451,33 @@ test "clean uses a whitelist and only removes non-current entries under accounts
     preserved_backup.close();
 }
 
+test "clean preserves the default export directory" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("accounts");
+
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+    try registry.saveRegistry(gpa, codex_home, &reg);
+
+    const export_dir = try registry.defaultExportDirectory(gpa, codex_home);
+    defer gpa.free(export_dir);
+    const export_rel_path = try fs.path.join(gpa, &[_][]const u8{ "accounts", fs.path.basename(export_dir), "exported.auth.json" });
+    defer gpa.free(export_rel_path);
+    try tmp.dir.makePath(fs.path.dirname(export_rel_path).?);
+    try tmp.dir.writeFile(.{ .sub_path = export_rel_path, .data = "exported" });
+
+    const summary = try registry.cleanAccountsBackups(gpa, codex_home);
+    try std.testing.expect(summary.stale_snapshot_files_removed == 0);
+
+    var exported = try tmp.dir.openFile(export_rel_path, .{});
+    exported.close();
+}
+
 test "clean preserves account snapshots when registry is missing" {
     const gpa = std.testing.allocator;
     var tmp = fs.tmpDir(.{});

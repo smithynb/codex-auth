@@ -347,7 +347,7 @@ pub fn removeSelectedAccountsAndPersist(
         null;
     defer if (current_active_account_key) |key| allocator.free(key);
 
-    var current_auth_state = try loadCurrentAuthState(allocator, codex_home);
+    var current_auth_state = try loadCurrentAuthState(allocator, codex_home, reg);
     defer current_auth_state.deinit(allocator);
 
     const active_removed = if (current_active_account_key) |key|

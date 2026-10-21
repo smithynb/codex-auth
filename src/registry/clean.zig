@@ -216,6 +216,8 @@ pub fn isAllowedCurrentSnapshot(reg: *const Registry, entry_name: []const u8) bo
 pub fn isAllowedAccountsEntry(reg: *const Registry, entry_name: []const u8) bool {
     if (std.mem.eql(u8, entry_name, "registry.json")) return true;
     if (std.mem.eql(u8, entry_name, "backups")) return true;
+    // Default `export` destination; it holds user-requested credential copies.
+    if (std.mem.eql(u8, entry_name, "backup")) return true;
     return isAllowedCurrentSnapshot(reg, entry_name);
 }
 
