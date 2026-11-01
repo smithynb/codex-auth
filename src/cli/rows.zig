@@ -312,3 +312,31 @@ pub fn indexWidth(count: usize) usize {
     }
     return width;
 }
+
+pub fn formatTimestampAlloc(allocator: std.mem.Allocator, timestamp: ?i64) ![]u8 {
+    return formatTimestampWithFormatAlloc(allocator, timestamp, .@"24h");
+}
+
+pub fn formatTimestampWithFormatAlloc(allocator: std.mem.Allocator, timestamp: ?i64, time_format: clock.TimeFormat) ![]u8 {
+    var tm: c.struct_tm = undefined;
+    if (timestamp == null or !localtimeCompat(timestamp.?, &tm)) return allocator.dupe(u8, "unavailable");
+    const time = try clock.formatClockAlloc(allocator, @intCast(tm.tm_hour), @intCast(tm.tm_min), time_format);
+    defer allocator.free(time);
+    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {s}", .{
+        @as(u32, @intCast(tm.tm_year + 1900)), @as(u32, @intCast(tm.tm_mon + 1)), @as(u32, @intCast(tm.tm_mday)), time,
+    });
+}
+
+/// Formats a future timestamp as a local `YYYY-MM-DD` date. Missing, invalid,
+/// and already-expired timestamps render as `-` so stale snapshots do not look
+/// like current entitlements.
+pub fn formatFutureDateAlloc(allocator: std.mem.Allocator, timestamp: ?i64, now: i64) ![]u8 {
+    const value = timestamp orelse return allocator.dupe(u8, "-");
+    if (value <= now) return allocator.dupe(u8, "-");
+    var tm: c.struct_tm = undefined;
+    if (!localtimeCompat(value, &tm)) return allocator.dupe(u8, "-");
+    const year: u32 = @intCast(tm.tm_year + 1900);
+    const month: u32 = @intCast(tm.tm_mon + 1);
+    const day: u32 = @intCast(tm.tm_mday);
+    return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{ year, month, day });
+}

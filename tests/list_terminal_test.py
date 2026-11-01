@@ -1,11 +1,13 @@
 """Offline CLI regression: python3 tests/list_terminal_test.py after zig build."""
 
+from datetime import datetime
 import fcntl
 import json
 import os
 from pathlib import Path
 import pty
 import re
+import select
 import struct
 import subprocess
 import tempfile
@@ -123,6 +125,104 @@ class ListTerminalTest(unittest.TestCase):
         self.assertEqual(before["active_account_key"], after["active_account_key"])
         self.assertEqual([a["email"] for a in before["accounts"]],
                          [a["email"] for a in after["accounts"]])
+
+    def test_save_and_json_keep_legacy_expiry_and_upstream_cards(self):
+        registry = Path(self.home.name) / "accounts" / "registry.json"
+        data = json.loads(registry.read_text())
+        expected = data["accounts"][0]["last_usage"]["reset_credits_expires_at"]
+        cards = [{"id": "fixture-card", "status": "available",
+                  "expires_at": "2100-01-01T00:00:00Z", "title": "Fixture"}]
+        data["accounts"][0]["last_usage"]["reset_credit"] = cards
+        registry.write_text(json.dumps(data))
+        subprocess.run(["node", str(CLI), "config", "time", "--format", "12h"],
+                       capture_output=True, env=self.env, check=True, timeout=10)
+        saved = json.loads(registry.read_text())
+        self.assertEqual(saved["time_format"], "12h")
+        self.assertEqual(saved["accounts"][0]["last_usage"]["reset_credits_expires_at"], expected)
+        result = subprocess.run(["node", str(CLI), "list", "--skip-api", "--json"],
+                                capture_output=True, env=self.env, check=True, timeout=10)
+        usage = json.loads(result.stdout)["accounts"][0]["usage"]
+        self.assertEqual(usage["reset_credits_expires_at"], expected)
+        self.assertEqual(usage["reset_credit"], cards)
+
+    def test_responsive_twelve_hour_output_keeps_complete_clocks(self):
+        registry = Path(self.home.name) / "accounts" / "registry.json"
+        data = json.loads(registry.read_text())
+        data["time_format"] = "12h"
+        for account in data["accounts"]:
+            account["access_token_expires_at"] = int(time.time()) + 3600
+        registry.write_text(json.dumps(data))
+        for cols in [20, 40, 60, 100, 180, 220]:
+            with self.subTest(cols=cols):
+                plain = ANSI.sub(b"", self.capture_tty(False, cols=cols)).decode()
+                for line in plain.splitlines():
+                    self.assertLessEqual(len(line), cols)
+                for clock in re.finditer(r"\b\d{1,2}:\d{2}(?: [AP]M)?", plain):
+                    self.assertTrue(clock.group().endswith((" AM", " PM")), clock.group())
+                if cols == 220:
+                    self.assertIn("AUTH EXPIRE", plain)
+                    self.assertRegex(plain, r"\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M")
+
+    def test_plain_list_uses_future_available_cards_without_legacy_expiry(self):
+        registry = Path(self.home.name) / "accounts" / "registry.json"
+        data = json.loads(registry.read_text())
+        for account in data["accounts"]:
+            usage = account["last_usage"]
+            usage.pop("reset_credits_expires_at")
+            usage["reset_credit"] = [
+                {"id": "old", "status": "available", "expires_at": "2000-01-01T00:00:00Z"},
+                {"id": "used", "status": "used", "expires_at": "2099-01-01T00:00:00Z"},
+                {"id": "new", "status": "available", "expires_at": "2100-01-01T12:00:00Z"},
+            ]
+        registry.write_text(json.dumps(data))
+        output = ANSI.sub(b"", self.capture_tty(False, cols=220))
+        local_date = datetime.fromisoformat("2100-01-01T12:00:00+00:00").astimezone().strftime("%Y-%m-%d")
+        self.assertEqual(output.count(f"3 (exp {local_date}".encode()), 2)
+        self.assertNotIn(b"2099-", output)
+        self.assertNotIn(b"2000-", output)
+
+    def test_live_list_keeps_group_identity_and_quits_with_q(self):
+        registry = Path(self.home.name) / "accounts" / "registry.json"
+        data = json.loads(registry.read_text())
+        data["time_format"] = "12h"
+        for account, alias in zip(data["accounts"], ["first", "second"]):
+            account["email"] = "shared@example.com"
+            account["alias"] = alias
+            account["access_token_expires_at"] = int(time.time()) + 3600
+        registry.write_text(json.dumps(data))
+        master, slave = pty.openpty()
+        proc = None
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 200, 0, 0))
+            env = {**self.env, "HOME": self.home.name, "NO_COLOR": "1"}
+            proc = subprocess.Popen(["node", str(CLI), "list", "--live", "--skip-api"],
+                                    stdin=slave, stdout=slave, stderr=slave, env=env)
+            os.close(slave)
+            slave = None
+            output = bytearray()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    chunk = os.read(master, 65536)
+                    output.extend(chunk)
+                    if b"first" in output and b"second" in output:
+                        break
+            plain = ANSI.sub(b"", output).decode()
+            self.assertIn("sha***@e***.com", plain)
+            self.assertIn("first", plain)
+            self.assertIn("second", plain)
+            self.assertNotIn("shared@example.com", plain)
+            self.assertRegex(plain, r"\d{1,2}:\d{2} [AP]M")
+            os.write(master, b"q")
+            proc.wait(timeout=5)
+            self.assertEqual(proc.returncode, 0)
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            os.close(master)
+            if slave is not None:
+                os.close(slave)
 
 
 if __name__ == "__main__":

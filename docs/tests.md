@@ -59,6 +59,11 @@ python3 tests/personal_help_test.py
 python3 tests/list_terminal_test.py
 ```
 
+The recovery suite exercises both the launcher with a fake native CLI and the
+real launcher/native CLI against a fake managed daemon. It covers reload, restart
+fallback, busy deferral, unchanged-file recovery, previous-account switching,
+declining the prompt, and failure exit codes.
+
 These tests use temporary account fixtures and fake executables. They do not need
 real credentials or provider requests. The Python terminal tests require POSIX
 pseudoterminals, so CI runs this group on Ubuntu alongside the Zig platform matrix.

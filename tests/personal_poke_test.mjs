@@ -172,7 +172,11 @@ if (behavior.refresh) {
   if (behavior.wrongIdentity) auth.tokens.account_id = 'different-account';
   fs.writeFileSync(authPath, JSON.stringify(auth));
 }
-if (behavior.lockActiveAuth) fs.chmodSync(path.join(source, 'auth.json'), 0o000);
+if (behavior.blockActiveAuth) {
+  // A directory forces a read/update failure even when tests run as root.
+  fs.unlinkSync(path.join(source, 'auth.json'));
+  fs.mkdirSync(path.join(source, 'auth.json'));
+}
 if (behavior.changeSource) {
   const newer = {...auth, last_refresh: 'concurrent-newer-fixture'};
   const name = Buffer.from('fixture-user::' + id).toString('base64url') + '.auth.json';
@@ -452,7 +456,7 @@ test('active auth.json replacement does not follow a planted temporary-file syml
 });
 
 test('a failed active auth.json update still saves the refreshed snapshot', async t => {
-  const h = await makeHarness(t, { activeAccount: 'a', behavior: { a: { refresh: true, lockActiveAuth: true } } });
+  const h = await makeHarness(t, { activeAccount: 'a', behavior: { a: { refresh: true, blockActiveAuth: true } } });
   const result = await h.run();
   assert.equal(result.status, 1, result.output);
   assert.equal(result.calls.filter(c => c.type === 'import').length, 1);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_runtime = @import("../core/runtime.zig");
 const display_rows = @import("../tui/display.zig");
 const registry = @import("../registry/root.zig");
 const usage_refresh = @import("usage.zig");
@@ -56,10 +57,15 @@ pub const UsageView = struct {
     credits: ?CreditsView = null,
     reset_credits: ?i64 = null,
     reset_credits_expires_at: ?i64 = null,
+    reset_credit: ?[]registry.ResetCreditCard = null,
     refresh: UsageRefreshView,
 
     pub fn deinit(self: *UsageView, allocator: std.mem.Allocator) void {
         if (self.credits) |*credits| credits.deinit(allocator);
+        if (self.reset_credit) |cards| {
+            for (cards) |card| registry.freeResetCreditCard(allocator, card);
+            allocator.free(cards);
+        }
         self.refresh.deinit(allocator);
         self.* = undefined;
     }
@@ -73,6 +79,8 @@ pub const AccountView = struct {
     account_name: ?[]u8,
     plan: ?registry.PlanType,
     auth_mode: ?registry.AuthMode,
+    access_token_expires_at: ?i64,
+    plan_expires_at: ?i64,
     active: bool,
     created_at: i64,
     last_used_at: ?i64,
@@ -278,6 +286,8 @@ fn buildAccountView(
         .account_name = account_name,
         .plan = registry.resolveDisplayPlan(rec),
         .auth_mode = rec.auth_mode,
+        .access_token_expires_at = rec.access_token_expires_at,
+        .plan_expires_at = rec.plan_expires_at,
         .active = isActive(reg, account_idx),
         .created_at = rec.created_at,
         .last_used_at = rec.last_used_at,
@@ -297,7 +307,7 @@ fn buildUsageView(
         .source = .none,
         .refresh = refresh,
     };
-    const credits = try cloneCreditsView(allocator, snapshot.credits);
+    var credits = try cloneCreditsView(allocator, snapshot.credits);
     errdefer if (credits) |*value| value.deinit(allocator);
 
     return .{
@@ -308,8 +318,14 @@ fn buildUsageView(
         .credits = credits,
         .reset_credits = snapshot.reset_credits,
         .reset_credits_expires_at = snapshot.reset_credits_expires_at,
+        .reset_credit = try cloneResetCreditCardsView(allocator, rec.last_usage),
         .refresh = refresh,
     };
+}
+fn cloneResetCreditCardsView(allocator: std.mem.Allocator, snapshot: ?registry.RateLimitSnapshot) !?[]registry.ResetCreditCard {
+    const snapshot_value = snapshot orelse return null;
+    const cards = snapshot_value.reset_credit orelse return null;
+    return try registry.cloneResetCreditCards(allocator, cards);
 }
 
 fn cloneCreditsView(allocator: std.mem.Allocator, credits: ?registry.CreditsSnapshot) !?CreditsView {

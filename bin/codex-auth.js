@@ -92,7 +92,21 @@ function authFingerprint() {
   }
 }
 
-async function offerDaemonRestart() {
+function activeAccountKey() {
+  const home = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const key = JSON.parse(fs.readFileSync(path.join(home, "accounts", "registry.json"), "utf8")).active_account_key;
+  if (typeof key !== "string" || key.length === 0) throw new Error("Missing active account");
+  return key;
+}
+
+async function offerDaemonRestart(binaryPath, selectedAuth) {
+  let accountKey;
+  try {
+    accountKey = activeAccountKey();
+  } catch {
+    console.error("Account switched, but the active account could not be read for daemon recovery.");
+    return 1;
+  }
   const answer = await new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
     rl.on("close", () => resolve(null));
@@ -102,13 +116,27 @@ async function offerDaemonRestart() {
       rl.close();
     });
   });
-  if (answer === null || !/^(y|yes)?$/i.test(answer.trim())) return;
+  if (answer === null || !/^(y|yes)?$/i.test(answer.trim())) return 0;
 
-  const restart = spawnSync("codex", ["app-server", "daemon", "restart"], { stdio: "inherit" });
-  if (restart.error || restart.signal || restart.status !== 0) {
-    console.error(`Account switched, but daemon restart failed: ${restart.error?.message || restart.signal || `exit ${restart.status}`}`);
-    console.error("Retry with: codex app-server daemon restart");
+  try {
+    if (authFingerprint() !== selectedAuth || activeAccountKey() !== accountKey) {
+      console.error("The active account changed while awaiting confirmation; daemon recovery was not attempted. Retry the switch.");
+      return 1;
+    }
+  } catch {
+    console.error("The active account could not be confirmed; daemon recovery was not attempted. Retry the switch.");
+    return 1;
   }
+
+  const restart = spawnSync(binaryPath, ["switch", accountKey, "--json", "--restart-daemon"], {
+    stdio: ["ignore", "pipe", "inherit"]
+  });
+  if (restart.error || restart.signal || restart.status !== 0) {
+    console.error(`Account switched, but daemon recovery failed: ${restart.error?.message || restart.signal || `exit ${restart.status}`}`);
+    console.error("Retry with: codex-auth switch <account> --restart-daemon");
+    return 1;
+  }
+  return 0;
 }
 
 const argv = process.argv.slice(2);
@@ -145,7 +173,7 @@ function isTopLevelHelp(args) {
 }
 
 const shouldOfferRestart = argv[0] === "switch"
-  && !argv.some((arg) => ["--json", "--help", "-h"].includes(arg))
+  && !argv.some((arg) => ["--json", "--help", "-h", "--restart-daemon"].includes(arg))
   && process.stdin.isTTY && process.stderr.isTTY;
 const previousAuth = shouldOfferRestart ? authFingerprint() : null;
 const binaryPath = resolveBinary();
@@ -169,7 +197,7 @@ if (child.signal) {
 } else {
   if (child.status === 0 && shouldOfferRestart) {
     const currentAuth = authFingerprint();
-    if (currentAuth !== null && currentAuth !== previousAuth) await offerDaemonRestart();
+    if (currentAuth !== null && currentAuth !== previousAuth) process.exit(await offerDaemonRestart(binaryPath, currentAuth));
   }
   process.exit(child.status ?? 1);
 }

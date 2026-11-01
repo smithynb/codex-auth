@@ -8,6 +8,8 @@ reset, not the weekly quota reset or the time a new credit will be granted.
 API-backed refresh additionally reads
 `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` using the same
 OpenAI account credentials as usage refresh. It never redeems credits.
+The upstream reset-credit card request also supplies the legacy expiry field;
+the fork does not make a duplicate request.
 Unavailable, malformed, or failed expiry responses do not discard usage data;
 the column falls back to the existing credit count. Local-only listings use the
 cached expiry, if present and still in the future.
@@ -19,4 +21,6 @@ when the credit count remains unchanged.
 
 This is a local source/native-binary customization; reinstalling or upgrading the
 npm package can overwrite the installed native binary. The separate launcher
-customization that prompts for a daemon restart after switching remains intact.
+customization that prompts for daemon recovery after switching remains intact.
+Confirmation uses native auth reload with restart fallback; see
+[switch recovery](commands/switch.md#applying-a-switch-to-a-running-daemon).

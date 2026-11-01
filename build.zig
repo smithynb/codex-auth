@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) void {
         "tests/api_account_test.zig",
         "tests/api_http_test.zig",
         "tests/api_me_test.zig",
+        "tests/api_proxy_test.zig",
         "tests/api_usage_test.zig",
         "tests/auth_test.zig",
         "tests/cli_behavior_test.zig",
@@ -90,11 +91,13 @@ pub fn build(b: *std.Build) void {
         "tests/session_test.zig",
         "tests/time_relative_test.zig",
         "tests/time_clock_test.zig",
+        "tests/time_timestamp_test.zig",
         "tests/table_layout_test.zig",
         "tests/tui_display_test.zig",
         "tests/tui_session_test.zig",
         "tests/tui_table_test.zig",
         "tests/workflows_core_test.zig",
+        "tests/workflows_daemon_test.zig",
         "tests/workflows_live_test.zig",
     };
 

@@ -1,27 +1,8 @@
 # Table Layout
 
-The shared account table keeps each rendered line within the terminal width.
-When space is limited, the table should preserve the most useful live status
-before expanding long labels.
-
-This applies to `switch`, `remove`, `list`, and `list --live` because they all
-render through the shared table code in `src/cli/table_layout.zig` and are
-called by the renderers in `src/cli/render.zig`. The
-width-priority rules only matter when a viewport width is known, which is
-typically the live case.
-
-## Column Width Priority
-
-The account table uses two account-width phases:
-
-1. Give `ACCOUNT` enough width to remain identifiable.
-2. Give live status columns room in priority order: `5H`, `WEEKLY`, `PLAN`,
-   then `LAST`.
-3. Expand `5H`, `WEEKLY`, `PLAN`, and `LAST` to their requested widths.
-4. Use any remaining width to expand `ACCOUNT` toward its requested width.
-
-This means `ACCOUNT` is always considered first, but a long account label should
-not consume the whole table before `5H` and `WEEKLY` are visible.
+The responsive column policy is documented in
+[dynamic-columns.md](dynamic-columns.md). This page covers the account cell and
+a few rendered examples.
 
 ## Account Truncation
 
@@ -42,45 +23,36 @@ Examples for `very-long-account-name@example.com`:
 | 4 | `ver.` |
 | 8 | `very-lo.` |
 | 10 | `very-l.com` |
-| 14 | `very-long-.com` |
-| 32 | `very-long-account-name@example.com` |
+| 14 | `very-l.ple.com` |
+| 32 | `very-l.-account-name@example.com` |
+| 34 | `very-long-account-name@example.com` |
 
 Indentation for grouped child rows consumes account column width before the
 label is truncated.
 
-## Narrow Width Examples
+## Examples
 
-The visible column order remains `ACCOUNT`, `PLAN`, `5H`, `WEEKLY`, `LAST`, but
-width is assigned by usefulness rather than visual order.
-
-Wide enough:
+Plain `list` at a wide width:
 
 ```text
-ACCOUNT                          PLAN      5H   WEEKLY  LAST ACTIVITY
-work-main                        Business  31%       42%           Now
-very-long-account-name@example.com Business 88%       71%           -
+ACCOUNT             PLAN      PLAN EXPIRE  CREDITS    RESET CREDITS  5H       WEEKLY  AUTH EXPIRE       LAST ACTIVITY
+---------------------------------------------------------------------------------------------------------------------------
+very-long-account.  Pro       2026-11-22   unlimited  3              100%     58%     2027-01-15 08:00  Now
+work-main.          Business  -            12         0              31%      42%     2026-12-31 23:59  3d ago
 ```
 
-Medium:
+Plain `list` at 70 columns hides the deferred `LAST ACTIVITY`, `PLAN EXPIRE`,
+and `AUTH EXPIRE` columns so status and usage values stay readable:
 
 ```text
-ACCOUNT          PLAN      5H    WEEKLY  LAST
-work-main        Business  31%   42%     Now
-very-l.mple.com   Business 88%   71%     -
+ACCOUNT     PLAN  CR  RC  5H          WEEKLY
+--------------------------------------------
+very-long.  Pro   -   -   100%        58%
 ```
 
-Narrow:
+`list --live` at a medium width:
 
 ```text
-ACCOUNT     5H    WEEKLY
-work-main   31%   42%
-very-l.com  88%   71%
-```
-
-Very narrow:
-
-```text
-ACCOUNT   5H
-work-m.   31%
-very-l.   88%
+#*  | ACCOUNT    | PLAN | 5H    | WEEKLY
+ 1  | very-l.om) | Pro  | 100%  | 58%
 ```
