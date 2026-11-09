@@ -476,6 +476,7 @@ pub fn viewAccountsWithLiveUpdates(
                     .{
                         .max_cols = tui.terminalCols(),
                         .now = now_second,
+                        .time_format = current_display.reg.time_format,
                         .card_cursor = credit_selection.card_cursor,
                         .confirm_pending = confirm_pending,
                         .status = credit_selection.statusFor(account.account_key),

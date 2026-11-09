@@ -295,6 +295,23 @@ test "writeAccountsTable shows API_KEY in the plan column for API key auth" {
     try std.testing.expect(std.mem.find(u8, output, "API_KEY") != null);
 }
 
+test "compact reset-credit timestamps follow the configured time format" {
+    const gpa = std.testing.allocator;
+    const rows = codex_auth.cli.rows;
+    const twelve = try rows.formatCompactTimestampAlloc(gpa, 4102444800, .@"12h");
+    defer gpa.free(twelve);
+    const twenty_four = try rows.formatCompactTimestampAlloc(gpa, 4102444800, .@"24h");
+    defer gpa.free(twenty_four);
+    // Both keep the `MM-DD ` date prefix and drop the year.
+    try std.testing.expectEqualStrings(twelve[0..6], twenty_four[0..6]);
+    try std.testing.expect(twelve[2] == '-' and twelve[5] == ' ');
+    try std.testing.expect(std.mem.endsWith(u8, twelve, " AM") or std.mem.endsWith(u8, twelve, " PM"));
+    try std.testing.expectEqual(@as(usize, "MM-DD HH:MM".len), twenty_four.len);
+    const missing = try rows.formatCompactTimestampAlloc(gpa, null, .@"12h");
+    defer gpa.free(missing);
+    try std.testing.expectEqualStrings("-", missing);
+}
+
 test "configured time format reaches list, picker, and live copies" {
     const gpa = std.testing.allocator;
     var reg = makeTestRegistry();

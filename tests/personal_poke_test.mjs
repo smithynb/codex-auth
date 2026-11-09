@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parsePokeArgs, buildPokeInvocation, hasUnstartedFiveHourWindow, runPoke } from '../bin/personal-poke.mjs';
+import { parsePokeArgs, buildPokeInvocation, hasUnstartedFiveHourWindow, runPoke, authIdentity } from '../bin/personal-poke.mjs';
 
 test('defaults match the requested ping', () => {
   assert.deepEqual(parsePokeArgs([]), {
@@ -84,6 +84,23 @@ function fixtureAuth(id, changes = {}, email = `${id}@example.invalid`) {
     access_token: `fixture-access-${id}`, refresh_token: `fixture-refresh-${id}`, account_id: id,
   }, ...changes };
 }
+
+test('auth without an account id falls back to the default organization like the native parser', () => {
+  const identityFor = organizations => {
+    const auth = fixtureAuth('unused');
+    delete auth.tokens.account_id;
+    const claims = { email: 'org@example.invalid', 'https://api.openai.com/auth': {
+      chatgpt_user_id: 'fixture-user', organizations,
+    } };
+    auth.tokens.id_token = `e30.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.fixture`;
+    return authIdentity(Buffer.from(JSON.stringify(auth)));
+  };
+  assert.equal(identityFor([{ id: 'org-first' }, { id: 'org-default', is_default: true }]).key,
+    'fixture-user::org-default');
+  assert.equal(identityFor([{ id: '' }, { id: 'org-first' }, { id: 'org-second' }]).key,
+    'fixture-user::org-first');
+  assert.throws(() => identityFor([]), /Invalid auth/);
+});
 
 // Native snapshot names base64url-encode account keys that contain "::".
 function snapshotName(id) {

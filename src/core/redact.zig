@@ -7,6 +7,19 @@ pub fn redactEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// Formats `value` with `{f}`, masking email-shaped text inside it.
+pub fn masked(value: []const u8) Masked {
+    return .{ .value = value };
+}
+
+pub const Masked = struct {
+    value: []const u8,
+
+    pub fn format(self: Masked, out: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writeRedactedText(out, self.value);
+    }
+};
+
 // Preserve surrounding labels while masking email-shaped identities within them.
 pub fn writeRedactedText(out: *std.Io.Writer, value: []const u8) !void {
     var written: usize = 0;

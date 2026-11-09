@@ -5816,7 +5816,8 @@ test "Scenario: Given no available reset credits when running reset then it repo
     defer gpa.free(result.stderr);
 
     try expectFailure(result);
-    try std.testing.expect(std.mem.find(u8, result.stderr, "no available reset credits") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "no available reset credits for emp***@e***.com.") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, email) == null);
 }
 
 fn writeMockFixtureNamed(

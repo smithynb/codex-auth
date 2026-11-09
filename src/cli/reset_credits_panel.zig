@@ -2,6 +2,7 @@ const std = @import("std");
 const registry = @import("../registry/root.zig");
 const reset_credits_api = @import("../api/reset_credits.zig");
 const rows = @import("rows.zig");
+const clock = @import("../time/clock.zig");
 const style = @import("style.zig");
 const timestamp = @import("../time/timestamp.zig");
 const text_width = @import("../tui/text_width.zig");
@@ -456,6 +457,7 @@ pub fn hasAvailable(
 pub const RenderOptions = struct {
     max_cols: usize,
     now: i64,
+    time_format: clock.TimeFormat = .@"24h",
     card_cursor: usize = 0,
     /// Draws the re-confirm hint on the highlighted card.
     confirm_pending: bool = false,
@@ -522,7 +524,7 @@ pub fn render(
             try line.writer.writeAll("  ");
             try line.writer.writeAll(spent.title orelse "untitled");
             if (spent.epoch) |epoch| {
-                const compact = try rows.formatCompactTimestampAlloc(allocator, epoch);
+                const compact = try rows.formatCompactTimestampAlloc(allocator, epoch, opts.time_format);
                 defer allocator.free(compact);
                 const rel = try relativeIn(allocator, epoch, opts.now);
                 defer allocator.free(rel);
@@ -546,7 +548,7 @@ pub fn render(
         try line.writer.writeAll(if (selected) "> " else "  ");
         try line.writer.writeAll(card.title orelse "untitled");
         if (card.epoch) |epoch| {
-            const compact = try rows.formatCompactTimestampAlloc(allocator, epoch);
+            const compact = try rows.formatCompactTimestampAlloc(allocator, epoch, opts.time_format);
             defer allocator.free(compact);
             const rel = try relativeIn(allocator, epoch, opts.now);
             defer allocator.free(rel);

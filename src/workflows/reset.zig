@@ -4,6 +4,7 @@ const registry = @import("../registry/root.zig");
 const reset_credits_api = @import("../api/reset_credits.zig");
 const transport_mod = @import("../api/transport.zig");
 const query_mod = @import("query.zig");
+const redact = @import("../core/redact.zig");
 
 const panel = cli.reset_credits_panel;
 
@@ -16,17 +17,17 @@ pub fn handleReset(allocator: std.mem.Allocator, transport: transport_mod.Transp
 
     const account_key = switch (resolution) {
         .not_found => {
-            try cli.output.printResetError("no account matches '{s}'.", .{opts.selector});
+            try cli.output.printResetError("no account matches '{f}'.", .{redact.masked(opts.selector)});
             return error.AccountNotFound;
         },
         .direct => |key| key,
         .multiple => {
-            try cli.output.printResetError("`{s}` matches multiple accounts; use an exact email, alias, or account key.", .{opts.selector});
+            try cli.output.printResetError("`{f}` matches multiple accounts; use an exact email, alias, or account key.", .{redact.masked(opts.selector)});
             return error.ResetFailed;
         },
     };
     const account_idx = registry.findAccountIndexByAccountKey(&reg, account_key) orelse {
-        try cli.output.printResetError("no account matches '{s}'.", .{opts.selector});
+        try cli.output.printResetError("no account matches '{f}'.", .{redact.masked(opts.selector)});
         return error.AccountNotFound;
     };
     const rec = &reg.accounts.items[account_idx];
@@ -34,7 +35,7 @@ pub fn handleReset(allocator: std.mem.Allocator, transport: transport_mod.Transp
     const cards = try panel.collectAvailable(allocator, rec, &.{});
     defer allocator.free(cards);
     if (cards.len == 0) {
-        try cli.output.printResetError("no available reset credits for {s}.", .{rec.email});
+        try cli.output.printResetError("no available reset credits for {f}.", .{redact.masked(rec.email)});
         return error.ResetFailed;
     }
 
@@ -60,7 +61,7 @@ pub fn handleReset(allocator: std.mem.Allocator, transport: transport_mod.Transp
             // by expiry ascending, so `cards[1]` is that card.
             var next_expiry: ?[]u8 = null;
             if (cards.len > 1 and cards[1].epoch != null) {
-                next_expiry = try cli.rows.formatCompactTimestampAlloc(allocator, cards[1].epoch);
+                next_expiry = try cli.rows.formatCompactTimestampAlloc(allocator, cards[1].epoch, reg.time_format);
             }
             defer if (next_expiry) |text| allocator.free(text);
             try cli.output.printResetSummary(

@@ -695,6 +695,17 @@ pub fn mergeAccountRecord(allocator: std.mem.Allocator, dest: *AccountRecord, in
         if (merged_incoming.account_name == null and dest.account_name != null) {
             merged_incoming.account_name = cloneOptionalStringAlloc(allocator, dest.account_name) catch unreachable;
         }
+        // A newer credential file (for example rotated tokens) carries no alias
+        // or usage history; keep the stored ones instead of erasing them.
+        // Swapping moves ownership, so freeing `dest` releases the unused side.
+        if (merged_incoming.alias.len == 0 and dest.alias.len != 0) {
+            std.mem.swap([]u8, &merged_incoming.alias, &dest.alias);
+        }
+        if (merged_incoming.last_usage == null and dest.last_usage != null) {
+            std.mem.swap(?RateLimitSnapshot, &merged_incoming.last_usage, &dest.last_usage);
+            merged_incoming.last_usage_at = dest.last_usage_at;
+        }
+        if (merged_incoming.last_used_at == null) merged_incoming.last_used_at = dest.last_used_at;
         freeAccountRecord(allocator, dest);
         dest.* = merged_incoming;
         return;

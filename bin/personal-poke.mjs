@@ -88,7 +88,15 @@ function snapshotFileName(accountKey) {
   return `${plain ? accountKey : Buffer.from(accountKey).toString('base64url')}.auth.json`;
 }
 
-function authIdentity(bytes) {
+// Mirror the native parser: without an explicit account id, use the default
+// organization, else the first organization with an id.
+function organizationAccountId(accountClaims) {
+  const orgs = Array.isArray(accountClaims?.organizations) ? accountClaims.organizations : [];
+  const ids = orgs.filter(org => typeof org?.id === 'string' && org.id);
+  return (ids.find(org => org.is_default === true) ?? ids[0])?.id;
+}
+
+export function authIdentity(bytes) {
   const auth = JSON.parse(bytes.toString());
   if (auth.auth_mode === 'apikey' || (typeof auth.OPENAI_API_KEY === 'string' && auth.OPENAI_API_KEY.trim())) {
     return null;
@@ -101,7 +109,7 @@ function authIdentity(bytes) {
   const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
   const accountClaims = claims['https://api.openai.com/auth'];
   const user = accountClaims?.chatgpt_user_id ?? accountClaims?.user_id;
-  const account = tokens.account_id || accountClaims?.chatgpt_account_id;
+  const account = tokens.account_id || accountClaims?.chatgpt_account_id || organizationAccountId(accountClaims);
   if (typeof user !== 'string' || !user || typeof account !== 'string' || !account) throw new Error('Invalid auth');
   const label = typeof claims.email === 'string' ? maskEmail(claims.email) : user;
   return {

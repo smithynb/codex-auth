@@ -2219,3 +2219,30 @@ test "time format defaults for legacy and invalid settings and survives saving" 
         try std.testing.expectEqual(.@"12h", loaded.time_format);
     }
 }
+
+test "upserting newer credentials keeps the stored alias and usage history" {
+    const gpa = std.testing.allocator;
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+
+    var stored = try makeAccountRecord(gpa, "keep@example.com", "work", .plus, .chatgpt, 100);
+    stored.last_usage = .{
+        .primary = .{ .used_percent = 5, .window_minutes = 300, .resets_at = 4_102_444_800 },
+        .secondary = null,
+        .credits = null,
+        .plan_type = .plus,
+    };
+    stored.last_usage_at = 200;
+    try reg.accounts.append(gpa, stored);
+
+    // An imported credential file is newer but has no alias or usage.
+    const incoming = try makeAccountRecord(gpa, "keep@example.com", "", .plus, .chatgpt, 1_000);
+    try registry.upsertAccount(gpa, &reg, incoming);
+
+    try std.testing.expectEqual(@as(usize, 1), reg.accounts.items.len);
+    const merged = reg.accounts.items[0];
+    try std.testing.expectEqualStrings("work", merged.alias);
+    try std.testing.expectEqual(@as(i64, 1_000), merged.created_at);
+    try std.testing.expectEqual(@as(?i64, 200), merged.last_usage_at);
+    try std.testing.expectEqual(@as(f64, 5), merged.last_usage.?.primary.?.used_percent);
+}

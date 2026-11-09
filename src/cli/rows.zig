@@ -226,13 +226,14 @@ pub fn formatTimestampWithFormatAlloc(allocator: std.mem.Allocator, timestamp: ?
     });
 }
 
-/// Formats a timestamp as a local `MM-DD HH:MM`: the compact form the live reset
-/// credits rail and the `reset` summary share. An unparseable timestamp keeps the
-/// `-` missing marker of the full form.
-pub fn formatCompactTimestampAlloc(allocator: std.mem.Allocator, timestamp: ?i64) ![]u8 {
-    const full = try formatTimestampAlloc(allocator, timestamp);
-    if (full.len < 16) return full;
-    const compact = try allocator.dupe(u8, full[5..16]);
+/// Formats a timestamp as a local `MM-DD` plus the clock in `time_format`: the
+/// compact form the live reset credits rail and the `reset` summary share. An
+/// unparseable timestamp keeps the `-` missing marker of the full form.
+pub fn formatCompactTimestampAlloc(allocator: std.mem.Allocator, timestamp: ?i64, time_format: clock.TimeFormat) ![]u8 {
+    const full = try formatTimestampWithFormatAlloc(allocator, timestamp, time_format);
+    // `YYYY-MM-DD ` is 11 bytes; drop the year and keep the rest.
+    if (full.len <= 11) return full;
+    const compact = try allocator.dupe(u8, full[5..]);
     allocator.free(full);
     return compact;
 }
