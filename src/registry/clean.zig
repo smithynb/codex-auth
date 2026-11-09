@@ -1,10 +1,7 @@
 const std = @import("std");
 const app_runtime = @import("../core/runtime.zig");
-const builtin = @import("builtin");
 const common = @import("common.zig");
-const c_time = @cImport({
-    @cInclude("time.h");
-});
+const localtime = @import("../time/localtime.zig");
 
 const Registry = common.Registry;
 const accountSnapshotFileName = common.accountSnapshotFileName;
@@ -56,37 +53,13 @@ pub fn fileEqualsBytes(allocator: std.mem.Allocator, path: []const u8, bytes: []
 }
 
 pub fn backupDir(allocator: std.mem.Allocator, codex_home: []const u8) ![]u8 {
-    return try std.fs.path.join(allocator, &[_][]const u8{ codex_home, "accounts" });
-}
-
-pub fn localtimeCompat(ts: i64, out_tm: *c_time.struct_tm) bool {
-    if (comptime builtin.os.tag == .windows) {
-        if (comptime @hasDecl(c_time, "_localtime64_s") and @hasDecl(c_time, "__time64_t")) {
-            var t64 = std.math.cast(c_time.__time64_t, ts) orelse return false;
-            return c_time._localtime64_s(out_tm, &t64) == 0;
-        }
-        return false;
-    }
-
-    var t = std.math.cast(c_time.time_t, ts) orelse return false;
-    if (comptime @hasDecl(c_time, "localtime_r")) {
-        return c_time.localtime_r(&t, out_tm) != null;
-    }
-
-    if (comptime @hasDecl(c_time, "localtime")) {
-        const tm_ptr = c_time.localtime(&t);
-        if (tm_ptr == null) return false;
-        out_tm.* = tm_ptr.*;
-        return true;
-    }
-
-    return false;
+    return try std.Io.Dir.path.join(allocator, &[_][]const u8{ codex_home, "accounts" });
 }
 
 pub fn formatBackupTimestamp(allocator: std.mem.Allocator, ts: i64) ![]u8 {
-    var tm: c_time.struct_tm = undefined;
-    if (!localtimeCompat(ts, &tm)) {
-        return std.fmt.allocPrint(allocator, "{d}", .{ts});
+    var tm: localtime.struct_tm = undefined;
+    if (!localtime.compat(ts, &tm)) {
+        return allocator.print("{d}", .{ts});
     }
 
     const year: u32 = @intCast(tm.tm_year + 1900);
@@ -95,7 +68,7 @@ pub fn formatBackupTimestamp(allocator: std.mem.Allocator, ts: i64) ![]u8 {
     const hour: u32 = @intCast(tm.tm_hour);
     const minute: u32 = @intCast(tm.tm_min);
     const second: u32 = @intCast(tm.tm_sec);
-    return std.fmt.allocPrint(allocator, "{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}", .{
+    return allocator.print("{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}", .{
         year,
         month,
         day,
@@ -108,7 +81,7 @@ pub fn formatBackupTimestamp(allocator: std.mem.Allocator, ts: i64) ![]u8 {
 pub fn makeBackupPath(allocator: std.mem.Allocator, dir: []const u8, base_name: []const u8) ![]u8 {
     const timestamp = try formatBackupTimestamp(allocator, std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds());
     defer allocator.free(timestamp);
-    const base = try std.fmt.allocPrint(allocator, "{s}.bak.{s}", .{ base_name, timestamp });
+    const base = try allocator.print("{s}.bak.{s}", .{ base_name, timestamp });
     defer allocator.free(base);
 
     var attempt: usize = 0;
@@ -116,9 +89,9 @@ pub fn makeBackupPath(allocator: std.mem.Allocator, dir: []const u8, base_name: 
         const name = if (attempt == 0)
             try allocator.dupe(u8, base)
         else
-            try std.fmt.allocPrint(allocator, "{s}.{d}", .{ base, attempt });
+            try allocator.print("{s}.{d}", .{ base, attempt });
 
-        const path = try std.fs.path.join(allocator, &[_][]const u8{ dir, name });
+        const path = try std.Io.Dir.path.join(allocator, &[_][]const u8{ dir, name });
         allocator.free(name);
 
         if (std.Io.Dir.cwd().openFile(app_runtime.io(), path, .{})) |file| {
@@ -204,8 +177,8 @@ pub fn resolveStrictAccountAuthPath(
 
 pub fn isAllowedCurrentSnapshot(reg: *const Registry, entry_name: []const u8) bool {
     for (reg.accounts.items) |rec| {
-        const expected_name = accountSnapshotFileName(std.heap.page_allocator, rec.account_key) catch continue;
-        defer std.heap.page_allocator.free(expected_name);
+        const expected_name = accountSnapshotFileName(app_runtime.scratchAllocator(), rec.account_key) catch continue;
+        defer app_runtime.scratchAllocator().free(expected_name);
         if (std.mem.eql(u8, entry_name, expected_name)) {
             return true;
         }
@@ -216,8 +189,8 @@ pub fn isAllowedCurrentSnapshot(reg: *const Registry, entry_name: []const u8) bo
 pub fn isAllowedAccountsEntry(reg: *const Registry, entry_name: []const u8) bool {
     if (std.mem.eql(u8, entry_name, "registry.json")) return true;
     if (std.mem.eql(u8, entry_name, "backups")) return true;
-    // Default `export` destination; it holds user-requested credential copies.
-    if (std.mem.eql(u8, entry_name, "backup")) return true;
+    if (std.mem.eql(u8, entry_name, common.default_export_dir_name)) return true;
+    if (std.mem.eql(u8, entry_name, common.codext_cache_dir_name)) return true;
     return isAllowedCurrentSnapshot(reg, entry_name);
 }
 
@@ -254,19 +227,37 @@ pub fn cleanAccountsBackupsWithLoader(allocator: std.mem.Allocator, codex_home: 
     var reg = try load_registry(allocator, codex_home);
     defer reg.deinit(allocator);
 
-    var stale_snapshot_files_removed: usize = 0;
+    // Collect the stale entries first: deleting while the directory iterator is
+    // live can skip siblings depending on the filesystem.
+    var stale_names: std.ArrayList(struct { name: []u8, kind: std.Io.File.Kind }) = .empty;
+    defer {
+        for (stale_names.items) |item| allocator.free(item.name);
+        stale_names.deinit(allocator);
+    }
     var accounts_dir = try std.Io.Dir.cwd().openDir(app_runtime.io(), dir, .{ .iterate = true });
     defer accounts_dir.close(app_runtime.io());
     var it = accounts_dir.iterate();
     while (try it.next(app_runtime.io())) |entry| {
+        switch (entry.kind) {
+            .file, .sym_link, .directory => {},
+            else => continue,
+        }
         if (isAllowedAccountsEntry(&reg, entry.name)) {
             continue;
         }
+        const owned_name = try allocator.dupe(u8, entry.name);
+        stale_names.append(allocator, .{ .name = owned_name, .kind = entry.kind }) catch |err| {
+            allocator.free(owned_name);
+            return err;
+        };
+    }
 
-        switch (entry.kind) {
-            .file, .sym_link => try accounts_dir.deleteFile(app_runtime.io(), entry.name),
-            .directory => try accounts_dir.deleteTree(app_runtime.io(), entry.name),
-            else => continue,
+    var stale_snapshot_files_removed: usize = 0;
+    for (stale_names.items) |item| {
+        switch (item.kind) {
+            .file, .sym_link => try accounts_dir.deleteFile(app_runtime.io(), item.name),
+            .directory => try accounts_dir.deleteTree(app_runtime.io(), item.name),
+            else => unreachable,
         }
         stale_snapshot_files_removed += 1;
     }

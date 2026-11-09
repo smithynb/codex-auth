@@ -11,6 +11,7 @@ const results = @import("results.zig");
 const ensureLiveTty = preflight.ensureLiveTty;
 const findMatchingAccountsForRemove = query_mod.findMatchingAccountsForRemove;
 const findAccountIndexByDisplayNumber = query_mod.findAccountIndexByDisplayNumber;
+const findExactLabelIndices = query_mod.findExactLabelIndices;
 const loadCurrentAuthState = active_auth.loadCurrentAuthState;
 const selectionContainsAccountKey = active_auth.selectionContainsAccountKey;
 const selectionContainsIndex = active_auth.selectionContainsIndex;
@@ -86,7 +87,7 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
     const interactive_remove = !opts.all and opts.selectors.len == 0;
     if (interactive_remove and opts.live) {
         try ensureLiveTty(.remove_account);
-        const live_allocator = std.heap.smp_allocator;
+        const live_allocator = app_runtime.fastAllocator();
         const loaded = try loadInitialLiveSelectionDisplay(
             live_allocator,
             codex_home,
@@ -104,6 +105,7 @@ pub fn handleRemove(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
             opts.api_mode == .force_api,
             loaded.policy,
             loaded.refresh_error_name,
+            false,
         );
         defer runtime.deinit();
 
@@ -324,10 +326,30 @@ fn resolveRemoveSelectors(
             continue;
         }
 
-        if (try findAccountIndexByDisplayNumber(allocator, reg, selector)) |account_idx| {
-            try appendSelectedIndex(allocator, &selected, account_idx);
-            try resolutions.append(allocator, .{ .selector = selector, .match = .{ .resolved = account_idx } });
-            continue;
+        if (query_mod.selectorIsBareRowNumber(selector)) {
+            if (try findAccountIndexByDisplayNumber(allocator, reg, selector)) |account_idx| {
+                try appendSelectedIndex(allocator, &selected, account_idx);
+                try resolutions.append(allocator, .{ .selector = selector, .match = .{ .resolved = account_idx } });
+                continue;
+            }
+        }
+
+        {
+            var exact = try findExactLabelIndices(allocator, reg, selector);
+            defer exact.deinit(allocator);
+            if (exact.items.len == 1) {
+                const account_idx = exact.items[0];
+                try appendSelectedIndex(allocator, &selected, account_idx);
+                try resolutions.append(allocator, .{ .selector = selector, .match = .{ .resolved = account_idx } });
+                continue;
+            }
+            if (exact.items.len > 1) {
+                const ambiguous = try allocator.dupe(usize, exact.items);
+                errdefer allocator.free(ambiguous);
+                for (exact.items) |account_idx| try appendSelectedIndex(allocator, &selected, account_idx);
+                try resolutions.append(allocator, .{ .selector = selector, .match = .{ .ambiguous = ambiguous } });
+                continue;
+            }
         }
 
         var matches = try findMatchingAccountsForRemove(allocator, reg, selector);

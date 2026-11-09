@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_runtime = @import("../core/runtime.zig");
 const cli = @import("../cli/root.zig");
 const registry = @import("../registry/root.zig");
 const live_flow = @import("live.zig");
@@ -62,7 +63,7 @@ pub fn handleSwitch(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
         }
 
         try ensureLiveTty(.switch_account);
-        const live_allocator = std.heap.smp_allocator;
+        const live_allocator = app_runtime.fastAllocator();
         const strict_refresh = opts.api_mode == .force_api;
         const loaded = try loadInitialLiveSelectionDisplay(
             live_allocator,
@@ -81,6 +82,7 @@ pub fn handleSwitch(allocator: std.mem.Allocator, codex_home: []const u8, opts: 
             strict_refresh,
             loaded.policy,
             loaded.refresh_error_name,
+            opts.no_restart_daemon,
         );
         defer runtime.deinit();
 
@@ -155,31 +157,42 @@ fn handleSwitchPrevious(
     codex_home: []const u8,
     opts: cli.types.SwitchOptions,
 ) !void {
-    std.debug.assert(!opts.json);
     std.debug.assert(opts.api_mode == .default);
     std.debug.assert(!opts.live);
 
-    var reg = try registry.loadRegistry(allocator, codex_home);
+    var reg = registry.loadRegistry(allocator, codex_home) catch |err| return if (opts.json) printJsonWorkflowError(err) else err;
     defer reg.deinit(allocator);
-    if (try registry.syncActiveAccountFromAuth(allocator, codex_home, &reg)) {
-        try registry.saveRegistry(allocator, codex_home, &reg);
+    if (registry.syncActiveAccountFromAuth(allocator, codex_home, &reg) catch |err| return if (opts.json) printJsonWorkflowError(err) else err) {
+        registry.saveRegistry(allocator, codex_home, &reg) catch |err| return if (opts.json) printJsonWorkflowError(err) else err;
     }
 
     const previous_account_key_value = reg.previous_active_account_key orelse {
-        try cli.output.printNoPreviousAccountError();
+        if (opts.json) {
+            try cli.json_output.printError("no_previous_account", "no previous account to switch to.", null);
+        } else {
+            try cli.output.printNoPreviousAccountError();
+        }
         return error.NoPreviousAccount;
     };
     const previous_account_key = try allocator.dupe(u8, previous_account_key_value);
     defer allocator.free(previous_account_key);
 
     if (registry.findAccountIndexByAccountKey(&reg, previous_account_key) == null) {
-        try cli.output.printPreviousAccountUnavailableError();
+        if (opts.json) {
+            try cli.json_output.printError("account_not_found", "previous account is no longer available.", null);
+        } else {
+            try cli.output.printPreviousAccountUnavailableError();
+        }
         return error.PreviousAccountUnavailable;
     }
 
     if (reg.active_account_key) |active_account_key| {
         if (std.mem.eql(u8, active_account_key, previous_account_key)) {
-            try cli.output.printNoPreviousAccountError();
+            if (opts.json) {
+                try cli.json_output.printError("no_previous_account", "no previous account to switch to.", null);
+            } else {
+                try cli.output.printNoPreviousAccountError();
+            }
             return error.NoPreviousAccount;
         }
     }
@@ -204,7 +217,7 @@ fn handleSwitchQueryJson(
 
     const selected_account_key = switch (resolution) {
         .not_found => {
-            const message = try std.fmt.allocPrint(allocator, "no account matches \"{s}\"", .{query});
+            const message = try allocator.print("no account matches \"{s}\"", .{query});
             defer allocator.free(message);
             try cli.json_output.printError("account_not_found", message, null);
             return error.AccountNotFound;
@@ -213,7 +226,7 @@ fn handleSwitchQueryJson(
         .multiple => |matches| {
             const candidates = try results.buildAccountViewsForIndices(allocator, &reg, null, matches.items);
             defer results.deinitAccountViews(allocator, candidates);
-            const message = try std.fmt.allocPrint(allocator, "query \"{s}\" matches multiple accounts", .{query});
+            const message = try allocator.print("query \"{s}\" matches multiple accounts", .{query});
             defer allocator.free(message);
             try cli.json_output.printError("ambiguous_query", message, candidates);
             return error.AmbiguousQuery;
@@ -238,26 +251,37 @@ fn activateSelection(
     registry.saveRegistry(allocator, codex_home, reg) catch |err| {
         return if (opts.json) printJsonMutationError(err) else err;
     };
-    if (opts.json) {
-        var result = results.buildSwitchResult(allocator, reg, account_key) catch |err| return printJsonWorkflowError(err);
-        defer result.deinit(allocator);
-        try cli.json_output.printSwitchResult(&result);
-    } else {
-        try cli.output.printSwitchedAccount(allocator, reg, account_key);
-    }
+    if (!opts.json) try cli.output.printSwitchedAccount(allocator, reg, account_key);
     var client = daemon.Client.init(allocator, codex_home) catch |err| {
         if (err == error.OutOfMemory) return err;
-        try cli.output.printCodexDaemonDiagnostic(codex_home, "codex", .unknown, opts.restart_daemon);
-        if (opts.restart_daemon) return error.CodexDaemonRestartFailed;
+        // A missing executable is only absence when the control socket is
+        // gone too; a live endpoint with an unlaunchable helper stays
+        // unconfirmed, because that daemon may still serve old credentials.
+        const outcome: daemon.Outcome = if (err == error.ExecutableRequired)
+            (if (try daemon.Client.controlEndpointPresent(codex_home)) .unknown else .not_running)
+        else
+            .unknown;
+        cli.output.printCodexDaemonDiagnostic(codex_home, "codex", outcome) catch {};
+        if (!opts.json) return;
+        var result = results.buildSwitchResult(allocator, reg, account_key, outcome) catch |build_err| return printJsonWorkflowError(build_err);
+        defer result.deinit(allocator);
+        try cli.json_output.printSwitchResult(&result);
         return;
     };
     defer client.deinit();
-    const outcome = if (opts.restart_daemon)
-        try client.ensure(daemon.restart_timeout_ms)
+    const outcome = if (opts.no_restart_daemon)
+        try client.reload()
     else
-        try client.probe();
-    try cli.output.printCodexDaemonDiagnostic(codex_home, client.executable, outcome, opts.restart_daemon);
-    if (opts.restart_daemon and (outcome == .unknown or outcome == .restart_failed or outcome == .timed_out))
+        try client.ensure(daemon.restart_timeout_ms);
+    // Best-effort stderr: a closed stderr must not skip JSON emission or
+    // replace the restart exit contract with a write error.
+    cli.output.printCodexDaemonDiagnostic(codex_home, client.executable, outcome) catch {};
+    if (opts.json) {
+        var result = results.buildSwitchResult(allocator, reg, account_key, outcome) catch |err| return printJsonWorkflowError(err);
+        defer result.deinit(allocator);
+        try cli.json_output.printSwitchResult(&result);
+    }
+    if (outcome == .restart_failed or outcome == .timed_out)
         return error.CodexDaemonRestartFailed;
 }
 

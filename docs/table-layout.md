@@ -2,7 +2,7 @@
 
 The responsive column policy is documented in
 [dynamic-columns.md](dynamic-columns.md). This page covers the account cell and
-a few rendered examples.
+the shared row-numbering form.
 
 ## Account Truncation
 
@@ -30,29 +30,16 @@ Examples for `very-long-account-name@example.com`:
 Indentation for grouped child rows consumes account column width before the
 label is truncated.
 
+## Row Numbering
+
+Plain `list`, `list --live`, `switch`, and `remove` share one numbering form:
+a marker column plus the row number right-aligned to the index width, with no
+zero padding — ` 1`, ` 7`, `10`. The marker is a separate column: `* 7` is the
+active account, `> 6` the live cursor row, `[x] 2` a checked remove row.
+
 ## Examples
 
-Plain `list` at a wide width:
-
-```text
-ACCOUNT             PLAN      PLAN EXPIRE  CREDITS    RESET CREDITS  5H       WEEKLY  AUTH EXPIRE       LAST ACTIVITY
----------------------------------------------------------------------------------------------------------------------------
-very-long-account.  Pro       2026-11-22   unlimited  3              100%     58%     2027-01-15 08:00  Now
-work-main.          Business  -            12         0              31%      42%     2026-12-31 23:59  3d ago
-```
-
-Plain `list` at 70 columns hides the deferred `LAST ACTIVITY`, `PLAN EXPIRE`,
-and `AUTH EXPIRE` columns so status and usage values stay readable:
-
-```text
-ACCOUNT     PLAN  CR  RC  5H          WEEKLY
---------------------------------------------
-very-long.  Pro   -   -   100%        58%
-```
-
-`list --live` at a medium width:
-
-```text
-#*  | ACCOUNT    | PLAN | 5H    | WEEKLY
- 1  | very-l.om) | Pro  | 100%  | 58%
-```
+The rendered frames at each width are exercised by width-sweep tests
+(`tests/table_layout_test.zig`); the column priorities, header ladders, and
+cell forms those frames follow are specified in
+[dynamic-columns.md](dynamic-columns.md).

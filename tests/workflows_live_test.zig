@@ -1,10 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const codex_auth = @import("codex_auth");
 
 const account_api = codex_auth.api.account;
 const app_runtime = codex_auth.core.runtime;
+const compat_fs = codex_auth.core.compat_fs;
 const cli = codex_auth.cli;
 const fixtures = @import("support/fixtures.zig");
+const fake_daemon = @import("support/codex_daemon.zig");
 const test_fixtures = fixtures;
 const main_mod = codex_auth.workflows;
 const registry = codex_auth.registry;
@@ -127,7 +130,7 @@ fn appendLiveMergeTestAccount(
     email: []const u8,
     alias: []const u8,
 ) !void {
-    const sep = std.mem.lastIndexOf(u8, account_key, "::") orelse return error.InvalidRecordKey;
+    const sep = std.mem.findLast(u8, account_key, "::") orelse return error.InvalidRecordKey;
     const chatgpt_user_id = account_key[0..sep];
     const chatgpt_account_id = account_key[sep + 2 ..];
     try reg.accounts.append(allocator, .{
@@ -162,8 +165,8 @@ fn writeLiveActionTestSnapshot(
     try std.Io.Dir.cwd().writeFile(app_runtime.io(), .{ .sub_path = auth_path, .data = auth_json });
 }
 
-fn sleepLiveRefreshTask(io: std.Io) void {
-    std.Io.sleep(io, .fromMilliseconds(800), .awake) catch {};
+fn sleepLiveRefreshTask(io: std.Io) error{Canceled}!void {
+    try std.Io.sleep(io, .fromMilliseconds(800), .awake);
 }
 
 test "live refresh interval uses the shared live config cadence" {
@@ -356,6 +359,7 @@ test "switch live action patches the current display after switching" {
             .label = "local",
         },
         try gpa.dupe(u8, "PreviousRefreshError"),
+        false,
     );
     defer runtime.deinit();
 
@@ -459,6 +463,7 @@ test "switch live action does not wait for an in-flight refresh" {
             .label = "local",
         },
         null,
+        false,
     );
     defer runtime.deinit();
 
@@ -493,6 +498,250 @@ test "switch live action does not wait for an in-flight refresh" {
     try std.testing.expect(elapsed_ms < 500);
     try std.testing.expectEqualStrings("Switched to bet***@e***.com", outcome.action_message.?);
     try std.testing.expectEqual(@as(u64, 1), runtime.display_generation);
+}
+
+test "switch live apply coordinates the daemon in the background" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const cases = [_]struct { body: []const u8, no_restart: bool = false, calls: []const u8, message: []const u8 }{
+        .{ .body = fake_daemon.reload_changed, .calls = "version\nreload-auth\n", .message = "reloaded" },
+        .{ .body = fake_daemon.reload_busy, .calls = "version\nreload-auth\n", .message = "reload deferred until the turn finishes" },
+        .{ .body = fake_daemon.succeed, .calls = "version\nreload-auth\nversion\nrestart\n", .message = "restarted" },
+        .{ .body = fake_daemon.succeed, .no_restart = true, .calls = "version\nreload-auth\n", .message = "may still use cached credentials" },
+    };
+    for (cases) |case| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const codex_home = try app_runtime.realPathFileAlloc(gpa, tmp.dir, ".");
+        defer gpa.free(codex_home);
+
+        const alpha_key = try fixtures.accountKeyForEmailAlloc(gpa, "alpha@example.com");
+        defer gpa.free(alpha_key);
+        const beta_key = try fixtures.accountKeyForEmailAlloc(gpa, "beta@example.com");
+        defer gpa.free(beta_key);
+
+        var reg = fixtures.makeEmptyRegistry();
+        defer reg.deinit(gpa);
+        try appendLiveMergeTestAccount(gpa, &reg, alpha_key, "alpha@example.com", "");
+        try appendLiveMergeTestAccount(gpa, &reg, beta_key, "beta@example.com", "");
+        try registry.setActiveAccountKey(gpa, &reg, alpha_key);
+        try registry.saveRegistry(gpa, codex_home, &reg);
+        try writeLiveActionTestSnapshot(gpa, codex_home, alpha_key, "alpha@example.com", "team");
+        try writeLiveActionTestSnapshot(gpa, codex_home, beta_key, "beta@example.com", "plus");
+        var home_dir = try compat_fs.cwd().openDir(codex_home, .{});
+        defer home_dir.close();
+        try fake_daemon.install(home_dir, case.body);
+
+        var runtime = SwitchLiveRuntime.init(
+            gpa,
+            codex_home,
+            .switch_account,
+            .skip_api,
+            false,
+            .{
+                .usage_api_enabled = false,
+                .account_api_enabled = false,
+                .interval_ms = switch_live_default_refresh_interval_ms,
+                .label = "local",
+            },
+            null,
+            case.no_restart,
+        );
+        defer runtime.deinit();
+
+        var current_display = try loadStoredSwitchSelectionDisplay(gpa, codex_home, .switch_account, .skip_api);
+        defer current_display.display.deinit(gpa);
+        defer if (current_display.refresh_error_name) |name| gpa.free(name);
+
+        const outcome = try switchLiveRuntimeApplySelection(
+            @ptrCast(&runtime),
+            gpa,
+            current_display.display.borrowed(),
+            beta_key,
+        );
+        defer {
+            if (outcome.action_message) |message| gpa.free(message);
+            var owned_display = outcome.updated_display;
+            owned_display.deinit(gpa);
+        }
+        try std.testing.expectEqualStrings("Switched to bet***@e***.com", outcome.action_message.?);
+
+        runtime.awaitDaemonIdle();
+        const calls = try fake_daemon.read(home_dir, "lifecycle-calls");
+        defer gpa.free(calls);
+        try std.testing.expectEqualStrings(case.calls, calls);
+        try std.testing.expectEqualStrings(case.message, runtime.daemon_worker.?.message.?);
+
+        const status = try runtime.buildStatusLine(gpa, current_display.display.borrowed(), null);
+        defer gpa.free(status);
+        try std.testing.expect(std.mem.find(u8, status, "daemon: ") != null);
+        try std.testing.expect(std.mem.find(u8, status, case.message) != null);
+    }
+}
+
+test "live deinit cancels an in-flight daemon round promptly" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    // Two stall shapes: blocked inside a pipe read (sleep_forever) and blocked
+    // in waitForExit after the helper closed its pipes (sleep_no_output).
+    const bodies = [_][]const u8{ fake_daemon.sleep_forever, fake_daemon.sleep_no_output };
+    for (bodies) |body| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const codex_home = try app_runtime.realPathFileAlloc(gpa, tmp.dir, ".");
+        defer gpa.free(codex_home);
+
+        const alpha_key = try fixtures.accountKeyForEmailAlloc(gpa, "alpha@example.com");
+        defer gpa.free(alpha_key);
+        const beta_key = try fixtures.accountKeyForEmailAlloc(gpa, "beta@example.com");
+        defer gpa.free(beta_key);
+
+        var reg = fixtures.makeEmptyRegistry();
+        defer reg.deinit(gpa);
+        try appendLiveMergeTestAccount(gpa, &reg, alpha_key, "alpha@example.com", "");
+        try appendLiveMergeTestAccount(gpa, &reg, beta_key, "beta@example.com", "");
+        try registry.setActiveAccountKey(gpa, &reg, alpha_key);
+        try registry.saveRegistry(gpa, codex_home, &reg);
+        try writeLiveActionTestSnapshot(gpa, codex_home, alpha_key, "alpha@example.com", "team");
+        try writeLiveActionTestSnapshot(gpa, codex_home, beta_key, "beta@example.com", "plus");
+        var home_dir = try compat_fs.cwd().openDir(codex_home, .{});
+        defer home_dir.close();
+        try fake_daemon.install(home_dir, body);
+
+        var runtime = SwitchLiveRuntime.init(
+            gpa,
+            codex_home,
+            .switch_account,
+            .skip_api,
+            false,
+            .{
+                .usage_api_enabled = false,
+                .account_api_enabled = false,
+                .interval_ms = switch_live_default_refresh_interval_ms,
+                .label = "local",
+            },
+            null,
+            false,
+        );
+        var runtime_deinit_pending = true;
+        defer if (runtime_deinit_pending) runtime.deinit();
+
+        var current_display = try loadStoredSwitchSelectionDisplay(gpa, codex_home, .switch_account, .skip_api);
+        defer current_display.display.deinit(gpa);
+        defer if (current_display.refresh_error_name) |name| gpa.free(name);
+
+        const outcome = try switchLiveRuntimeApplySelection(
+            @ptrCast(&runtime),
+            gpa,
+            current_display.display.borrowed(),
+            beta_key,
+        );
+        defer {
+            if (outcome.action_message) |message| gpa.free(message);
+            var owned_display = outcome.updated_display;
+            owned_display.deinit(gpa);
+        }
+
+        // Wait until the helper is actually running inside its stall so deinit
+        // exercises cancellation during a blocked read/wait, not the
+        // pre-spawn cancellation check.
+        var helper_started = false;
+        const wait_deadline_ms = nowMilliseconds() + 5_000;
+        while (!helper_started and nowMilliseconds() < wait_deadline_ms) {
+            if (fake_daemon.read(home_dir, "lifecycle-calls") catch null) |calls| {
+                defer gpa.free(calls);
+                helper_started = std.mem.find(u8, calls, "version") != null;
+            }
+            if (!helper_started) std.Io.sleep(app_runtime.io(), .fromMilliseconds(10), .awake) catch {};
+        }
+        try std.testing.expect(helper_started);
+
+        // The bound must stay well below the 5s `version` command deadline:
+        // with cancellation broken, deinit would have to wait out that
+        // deadline and could still satisfy a looser bound.
+        const started_ms = nowMilliseconds();
+        runtime.deinit();
+        runtime_deinit_pending = false;
+        try std.testing.expect(nowMilliseconds() - started_ms < 2_000);
+    }
+}
+
+test "a second live apply while the daemon worker is busy runs exactly one more round" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const codex_home = try app_runtime.realPathFileAlloc(gpa, tmp.dir, ".");
+    defer gpa.free(codex_home);
+
+    const alpha_key = try fixtures.accountKeyForEmailAlloc(gpa, "alpha@example.com");
+    defer gpa.free(alpha_key);
+    const beta_key = try fixtures.accountKeyForEmailAlloc(gpa, "beta@example.com");
+    defer gpa.free(beta_key);
+
+    var reg = fixtures.makeEmptyRegistry();
+    defer reg.deinit(gpa);
+    try appendLiveMergeTestAccount(gpa, &reg, alpha_key, "alpha@example.com", "");
+    try appendLiveMergeTestAccount(gpa, &reg, beta_key, "beta@example.com", "");
+    try registry.setActiveAccountKey(gpa, &reg, alpha_key);
+    try registry.saveRegistry(gpa, codex_home, &reg);
+    try writeLiveActionTestSnapshot(gpa, codex_home, alpha_key, "alpha@example.com", "team");
+    try writeLiveActionTestSnapshot(gpa, codex_home, beta_key, "beta@example.com", "plus");
+    var home_dir = try compat_fs.cwd().openDir(codex_home, .{});
+    defer home_dir.close();
+    try fake_daemon.install(home_dir, fake_daemon.slow_reload_changed);
+
+    var runtime = SwitchLiveRuntime.init(
+        gpa,
+        codex_home,
+        .switch_account,
+        .skip_api,
+        false,
+        .{
+            .usage_api_enabled = false,
+            .account_api_enabled = false,
+            .interval_ms = switch_live_default_refresh_interval_ms,
+            .label = "local",
+        },
+        null,
+        false,
+    );
+    defer runtime.deinit();
+
+    var current_display = try loadStoredSwitchSelectionDisplay(gpa, codex_home, .switch_account, .skip_api);
+    defer current_display.display.deinit(gpa);
+    defer if (current_display.refresh_error_name) |name| gpa.free(name);
+
+    const first = try switchLiveRuntimeApplySelection(
+        @ptrCast(&runtime),
+        gpa,
+        current_display.display.borrowed(),
+        beta_key,
+    );
+    defer {
+        if (first.action_message) |message| gpa.free(message);
+        var owned_display = first.updated_display;
+        owned_display.deinit(gpa);
+    }
+    // The first round is still inside the 1s `version` sleep, so this apply
+    // marks the worker dirty instead of spawning a second thread.
+    const second = try switchLiveRuntimeApplySelection(
+        @ptrCast(&runtime),
+        gpa,
+        current_display.display.borrowed(),
+        alpha_key,
+    );
+    defer {
+        if (second.action_message) |message| gpa.free(message);
+        var owned_display = second.updated_display;
+        owned_display.deinit(gpa);
+    }
+
+    runtime.awaitDaemonIdle();
+    const calls = try fake_daemon.read(home_dir, "lifecycle-calls");
+    defer gpa.free(calls);
+    try std.testing.expectEqualStrings("version\nreload-auth\nversion\nreload-auth\n", calls);
+    try std.testing.expectEqualStrings("reloaded", runtime.daemon_worker.?.message.?);
 }
 
 test "remove live action patches the current display after deleting the active account" {
@@ -547,6 +796,7 @@ test "remove live action patches the current display after deleting the active a
             .label = "local",
         },
         try gpa.dupe(u8, "PreviousRefreshError"),
+        false,
     );
     defer runtime.deinit();
 
@@ -655,6 +905,7 @@ test "remove live action does not wait for an in-flight refresh" {
             .label = "local",
         },
         null,
+        false,
     );
     defer runtime.deinit();
 
@@ -708,6 +959,7 @@ test "live runtime deinit cancels an in-flight refresh promptly" {
             .label = "local",
         },
         null,
+        false,
     );
 
     const live_io = runtime.io_impl.io();
@@ -797,6 +1049,7 @@ test "buildStatusLine releases mutex on allocation failure" {
             .label = "local",
         },
         try gpa.dupe(u8, "CurlRequired"),
+        false,
     );
     defer runtime.deinit();
 
@@ -808,7 +1061,7 @@ test "buildStatusLine releases mutex on allocation failure" {
         runtime.buildStatusLine(failing_allocator, .{
             .reg = &reg,
             .usage_overrides = null,
-        }),
+        }, null),
     );
 
     try std.testing.expect(runtime.mutex.tryLock());

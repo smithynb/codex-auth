@@ -13,16 +13,36 @@ pub const Values = struct {
 };
 
 /// Fields are kept as slices into the input text, which is valid for the whole
-/// parse. `scutil` emits far fewer keys than this, so the fixed table avoids an
-/// allocator round trip per line.
-const max_fields = 12;
+/// parse. Only the keys `appendProtocol` reads are stored, so the fixed table
+/// stays small and unrelated keys can never crowd the wanted ones out.
+const max_fields = 9;
+
+const wanted_keys = [_][]const u8{
+    "HTTPEnable",  "HTTPProxy",  "HTTPPort",
+    "HTTPSEnable", "HTTPSProxy", "HTTPSPort",
+    "SOCKSEnable", "SOCKSProxy", "SOCKSPort",
+};
 
 const Fields = struct {
-    keys: [max_fields][]const u8 = [_][]const u8{""} ** max_fields,
-    values: [max_fields][]const u8 = [_][]const u8{""} ** max_fields,
+    keys: [max_fields][]const u8 = @splat(""),
+    values: [max_fields][]const u8 = @splat(""),
     count: usize = 0,
 
     fn put(self: *Fields, key: []const u8, value: []const u8) void {
+        for (wanted_keys) |wanted| {
+            if (std.mem.eql(u8, key, wanted)) break;
+        } else return;
+        // A repeated key replaces its earlier value, matching "last wins" plist
+        // semantics and keeping the table bounded even for hostile input.
+        if (self.get(key) != null) {
+            for (self.keys[0..self.count], self.values[0..self.count]) |*found, *stored| {
+                if (std.mem.eql(u8, found.*, key)) {
+                    stored.* = value;
+                    return;
+                }
+            }
+            unreachable;
+        }
         if (self.count == max_fields) return;
         self.keys[self.count] = key;
         self.values[self.count] = value;
@@ -55,7 +75,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) !Values {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
 
-        const colon = std.mem.indexOf(u8, line, " : ");
+        const colon = std.mem.find(u8, line, " : ");
         const key = if (colon) |idx| std.mem.trim(u8, line[0..idx], " \t") else "";
         const value = if (colon) |idx| std.mem.trim(u8, line[idx + 3 ..], " \t") else line;
 

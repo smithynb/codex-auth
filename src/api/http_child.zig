@@ -51,7 +51,7 @@ pub fn runChildCaptureWithInputAndOutputLimit(
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
-    multi_reader.init(std.heap.page_allocator, app_runtime.io(), multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    multi_reader.init(app_runtime.scratchAllocator(), app_runtime.io(), multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer multi_reader.deinit();
 
     const stdout_reader = multi_reader.reader(0);
@@ -76,13 +76,17 @@ pub fn runChildCaptureWithInputAndOutputLimit(
         error.Timeout => {
             child.kill(app_runtime.io());
             const stdout = try multi_reader.toOwnedSlice(0);
-            defer std.heap.page_allocator.free(stdout);
+            defer app_runtime.scratchAllocator().free(stdout);
             const stderr = try multi_reader.toOwnedSlice(1);
-            defer std.heap.page_allocator.free(stderr);
+            defer app_runtime.scratchAllocator().free(stderr);
+            const owned_stdout = try allocator.dupe(u8, stdout);
+            errdefer allocator.free(owned_stdout);
+            const owned_stderr = try allocator.dupe(u8, stderr);
+            errdefer allocator.free(owned_stderr);
             return .{
                 .term = .{ .unknown = 0 },
-                .stdout = try allocator.dupe(u8, stdout),
-                .stderr = try allocator.dupe(u8, stderr),
+                .stdout = owned_stdout,
+                .stderr = owned_stderr,
                 .timed_out = true,
             };
         },
@@ -93,22 +97,21 @@ pub fn runChildCaptureWithInputAndOutputLimit(
 
     const term = try child.wait(app_runtime.io());
     const stdout = try multi_reader.toOwnedSlice(0);
-    defer std.heap.page_allocator.free(stdout);
+    defer app_runtime.scratchAllocator().free(stdout);
     const stderr = try multi_reader.toOwnedSlice(1);
-    defer std.heap.page_allocator.free(stderr);
+    defer app_runtime.scratchAllocator().free(stderr);
+
+    const owned_stdout = try allocator.dupe(u8, stdout);
+    errdefer allocator.free(owned_stdout);
+    const owned_stderr = try allocator.dupe(u8, stderr);
+    errdefer allocator.free(owned_stderr);
 
     return .{
         .term = term,
-        .stdout = try allocator.dupe(u8, stdout),
-        .stderr = try allocator.dupe(u8, stderr),
+        .stdout = owned_stdout,
+        .stderr = owned_stderr,
         .timed_out = false,
     };
-}
-
-pub fn computeBatchChildTimeoutMs(request_count: usize, max_concurrency: usize) u64 {
-    const safe_concurrency = @max(@as(usize, 1), max_concurrency);
-    const waves = @max(@as(usize, 1), (request_count + safe_concurrency - 1) / safe_concurrency);
-    return @as(u64, @intCast(waves)) * request_timeout_ms_value + 2000;
 }
 
 pub fn computeBatchChildOutputLimitBytes(request_count: usize) usize {

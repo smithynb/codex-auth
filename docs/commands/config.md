@@ -36,7 +36,8 @@ The setting is stored as top-level `"time_format": "12h"` or `"24h"` in `account
 
 ## Live Refresh Config
 
-`config live --interval <seconds>` sets the live TUI refresh interval.
+`config live --interval <seconds>` sets the live TUI refresh interval. The
+joined `--interval=<seconds>` form is accepted as well.
 
 - Allowed range: `5` to `3600`.
 - Stored in `registry.json` as top-level `interval_seconds`.

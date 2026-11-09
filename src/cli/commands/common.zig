@@ -5,6 +5,15 @@ pub fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
+/// Returns the inline value of a `--name=value` argument, or null when `arg`
+/// is not the joined form of `name` (bare flag names need a following arg).
+pub fn inlineFlagValue(arg: []const u8, name: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, arg, name)) return null;
+    const rest = arg[name.len..];
+    if (rest.len == 0 or rest[0] != '=') return null;
+    return rest[1..];
+}
+
 pub fn usageErrorResult(
     allocator: std.mem.Allocator,
     topic: types.HelpTopic,
@@ -23,7 +32,7 @@ pub fn usageErrorResultWithJson(
 ) !types.ParseResult {
     return .{ .usage_error = .{
         .topic = topic,
-        .message = try std.fmt.allocPrint(allocator, fmt, args),
+        .message = try allocator.print(fmt, args),
         .json = json,
     } };
 }
@@ -33,30 +42,6 @@ pub fn argsContainFlag(args: []const [:0]const u8, flag: []const u8) bool {
         if (std.mem.eql(u8, std.mem.sliceTo(raw_arg, 0), flag)) return true;
     }
     return false;
-}
-
-pub fn parseSimpleCommandArgs(
-    allocator: std.mem.Allocator,
-    command_name: []const u8,
-    topic: types.HelpTopic,
-    command: types.Command,
-    rest: []const [:0]const u8,
-) !types.ParseResult {
-    if (rest.len == 0) return .{ .command = command };
-    if (rest.len == 1 and isHelpFlag(std.mem.sliceTo(rest[0], 0))) {
-        return .{ .command = .{ .help = topic } };
-    }
-    const arg = std.mem.sliceTo(rest[0], 0);
-    if (std.mem.startsWith(u8, arg, "-")) {
-        return usageErrorResult(allocator, topic, "unknown flag `{s}` for `{s}`.", .{ arg, command_name });
-    }
-    return usageErrorResult(allocator, topic, "unexpected argument `{s}` for `{s}`.", .{ arg, command_name });
-}
-
-pub fn parsePercentArg(raw: []const u8) ?u8 {
-    const value = std.fmt.parseInt(u8, raw, 10) catch return null;
-    if (value == 0 or value > 100) return null;
-    return value;
 }
 
 pub fn freeImportOptions(allocator: std.mem.Allocator, auth_path: ?[]u8, alias: ?[]u8) void {

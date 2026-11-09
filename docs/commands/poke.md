@@ -80,7 +80,6 @@ cd /home/code/codex-auth
 git fetch upstream
 git merge upstream/main
 node --test tests/personal_poke_test.mjs
-python3 tests/personal_restart_test.py
 python3 tests/personal_help_test.py
 git push origin main
 ```

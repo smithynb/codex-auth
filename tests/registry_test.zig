@@ -19,8 +19,7 @@ fn authJsonWithEmailPlan(allocator: std.mem.Allocator, email: []const u8, plan: 
     const chatgpt_user_id = try chatgptUserIdForEmailAlloc(allocator, email);
     defer allocator.free(chatgpt_user_id);
     const header = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
-    const payload = try std.fmt.allocPrint(
-        allocator,
+    const payload = try allocator.print(
         "{{\"email\":\"{s}\",\"https://api.openai.com/auth\":{{\"chatgpt_account_id\":\"{s}\",\"chatgpt_user_id\":\"{s}\",\"user_id\":\"{s}\",\"chatgpt_plan_type\":\"{s}\"}}}}",
         .{ email, chatgpt_account_id, chatgpt_user_id, chatgpt_user_id, plan },
     );
@@ -34,7 +33,7 @@ fn authJsonWithEmailPlan(allocator: std.mem.Allocator, email: []const u8, plan: 
     const jwt = try std.mem.concat(allocator, u8, &[_][]const u8{ h64, ".", p64, ".sig" });
     defer allocator.free(jwt);
 
-    return try std.fmt.allocPrint(allocator, "{{\"tokens\":{{\"account_id\":\"{s}\",\"id_token\":\"{s}\"}}}}", .{ chatgpt_account_id, jwt });
+    return try allocator.print("{{\"tokens\":{{\"account_id\":\"{s}\",\"id_token\":\"{s}\"}}}}", .{ chatgpt_account_id, jwt });
 }
 
 fn accountKeyForEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
@@ -42,7 +41,7 @@ fn accountKeyForEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u
     defer allocator.free(chatgpt_user_id);
     const chatgpt_account_id = try chatgptAccountIdForEmailAlloc(allocator, email);
     defer allocator.free(chatgpt_account_id);
-    return std.fmt.allocPrint(allocator, "{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
+    return allocator.print("{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
 }
 
 fn hashPart(seed: u64, email: []const u8, modulus: u64) u64 {
@@ -50,8 +49,7 @@ fn hashPart(seed: u64, email: []const u8, modulus: u64) u64 {
 }
 
 fn chatgptAccountIdForEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
+    return allocator.print(
         "{d:0>8}-{d:0>4}-{d:0>4}-{d:0>4}-{d:0>12}",
         .{
             hashPart(1, email, 100_000_000),
@@ -64,8 +62,7 @@ fn chatgptAccountIdForEmailAlloc(allocator: std.mem.Allocator, email: []const u8
 }
 
 fn chatgptUserIdForEmailAlloc(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
+    return allocator.print(
         "user-{x:0>8}{x:0>8}{x:0>6}",
         .{
             hashPart(6, email, 0x100000000),
@@ -78,7 +75,7 @@ fn chatgptUserIdForEmailAlloc(allocator: std.mem.Allocator, email: []const u8) !
 fn legacySnapshotRelPath(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
     const key = try b64url(allocator, email);
     defer allocator.free(key);
-    const filename = try std.fmt.allocPrint(allocator, "{s}.auth.json", .{key});
+    const filename = try allocator.print("{s}.auth.json", .{key});
     defer allocator.free(filename);
     return try fs.path.join(allocator, &[_][]const u8{ "accounts", filename });
 }
@@ -213,7 +210,7 @@ fn setRecordIds(
     allocator.free(rec.chatgpt_account_id);
     rec.chatgpt_account_id = try allocator.dupe(u8, chatgpt_account_id);
     allocator.free(rec.account_key);
-    rec.account_key = try std.fmt.allocPrint(allocator, "{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
+    rec.account_key = try allocator.print("{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
 }
 
 fn countBackups(dir: fs.Dir, prefix: []const u8) !usize {
@@ -231,11 +228,11 @@ fn countBackups(dir: fs.Dir, prefix: []const u8) !usize {
 fn expectBackupNameFormat(name: []const u8, prefix: []const u8) !void {
     const marker = ".bak.";
     try std.testing.expect(std.mem.startsWith(u8, name, prefix));
-    const idx = std.mem.indexOf(u8, name, marker) orelse return error.TestExpectedEqual;
+    const idx = std.mem.find(u8, name, marker) orelse return error.TestExpectedEqual;
     const suffix = name[idx + marker.len ..];
 
     var stamp = suffix;
-    if (std.mem.lastIndexOfScalar(u8, suffix, '.')) |dot_idx| {
+    if (std.mem.findScalarLast(u8, suffix, '.')) |dot_idx| {
         const maybe_counter = suffix[dot_idx + 1 ..];
         if (maybe_counter.len > 0) {
             for (maybe_counter) |ch| {
@@ -260,13 +257,13 @@ fn expectBackupNameFormat(name: []const u8, prefix: []const u8) !void {
 }
 
 fn expectModeUnix(path: []const u8, expected_mode: u16) !void {
-    if (comptime builtin.os.tag == .windows) return;
+    if (comptime builtin.target.os.tag == .windows) return;
     const stat = try fs.cwd().statFile(path);
     try std.testing.expectEqual(@as(std.posix.mode_t, expected_mode), stat.permissions.toMode() & 0o777);
 }
 
 fn setModeUnix(path: []const u8, mode: u16) !void {
-    if (comptime builtin.os.tag == .windows) return;
+    if (comptime builtin.target.os.tag == .windows) return;
     try fs.cwd().inner.setFilePermissions(fs.io(), path, fs.File.Permissions.fromMode(mode), .{});
 }
 
@@ -297,9 +294,9 @@ test "registry save/load" {
     defer gpa.free(registry_path);
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"api\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"previous_active_account_key\": null") != null);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"plan_expires_at\": 1785326940") != null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"api\"") == null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"previous_active_account_key\": null") != null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"plan_expires_at\": 1785326940") != null);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
@@ -369,6 +366,25 @@ test "setting same active account preserves previous active account key" {
     try std.testing.expectEqualStrings(alpha_key, reg.previous_active_account_key.?);
 }
 
+test "upsertAccount backfills missing expiry fields when merging a staler record" {
+    const gpa = std.testing.allocator;
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+
+    const dest = try makeAccountRecord(gpa, "merge@example.com", "work", .pro, .chatgpt, 100);
+    try reg.accounts.append(gpa, dest);
+
+    var incoming = try makeAccountRecord(gpa, "merge@example.com", "work", .pro, .chatgpt, 1);
+    incoming.access_token_expires_at = 1_700_000_001;
+    incoming.plan_expires_at = 1_700_000_002;
+    try registry.upsertAccount(gpa, &reg, incoming);
+
+    try std.testing.expectEqual(@as(usize, 1), reg.accounts.items.len);
+    const rec = reg.accounts.items[0];
+    try std.testing.expectEqual(@as(?i64, 1_700_000_001), rec.access_token_expires_at);
+    try std.testing.expectEqual(@as(?i64, 1_700_000_002), rec.plan_expires_at);
+}
+
 test "plan labels are human-readable while registry stores canonical plan values" {
     const gpa = std.testing.allocator;
     var tmp = fs.tmpDir(.{});
@@ -389,8 +405,8 @@ test "plan labels are human-readable while registry stores canonical plan values
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
 
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"plan\": \"prolite\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "Pro Lite") == null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"plan\": \"prolite\"") != null);
+    try std.testing.expect(std.mem.find(u8, saved, "Pro Lite") == null);
     try std.testing.expectEqualStrings("Free", registry.planLabel(.free));
     try std.testing.expectEqualStrings("Plus", registry.planLabel(.plus));
     try std.testing.expectEqualStrings("Pro Lite", registry.planLabel(.prolite));
@@ -483,7 +499,7 @@ test "registry save/load round-trips account_name null" {
     defer gpa.free(registry_path);
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"account_name\": null") != null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"account_name\": null") != null);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
@@ -519,8 +535,8 @@ test "registry load normalizes schema four without previous active account key" 
     defer file.close();
     const contents = try file.readToEndAlloc(gpa, 10 * 1024 * 1024);
     defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"schema_version\": 4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"previous_active_account_key\": null") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"schema_version\": 4") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"previous_active_account_key\": null") != null);
 }
 
 test "schema three registry plan values migrate to canonical product plans" {
@@ -586,11 +602,11 @@ test "schema three registry plan values migrate to canonical product plans" {
     defer file.close();
     const contents = try file.readToEndAlloc(gpa, 10 * 1024 * 1024);
     defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"schema_version\": 4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"plan\": \"team\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"plan\": \"business\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"plan\": \"enterprise\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"plan_type\": \"enterprise\"") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"schema_version\": 4") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"plan\": \"team\"") == null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"plan\": \"business\"") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"plan\": \"enterprise\"") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"plan_type\": \"enterprise\"") != null);
 }
 
 test "registry save/load round-trips account_name string" {
@@ -614,7 +630,7 @@ test "registry save/load round-trips account_name string" {
     defer gpa.free(registry_path);
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"account_name\": \"abcd\"") != null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"account_name\": \"abcd\"") != null);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
@@ -712,7 +728,7 @@ test "registry save omits api config" {
     defer gpa.free(registry_path);
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"api\"") == null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"api\"") == null);
 }
 
 test "registry load ignores legacy api.usage and rewrites file without api config" {
@@ -746,7 +762,7 @@ test "registry load ignores legacy api.usage and rewrites file without api confi
     defer gpa.free(registry_path);
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"api\"") == null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"api\"") == null);
 }
 
 test "registry load ignores legacy api.account and rewrites file without api config" {
@@ -780,7 +796,7 @@ test "registry load ignores legacy api.account and rewrites file without api con
     defer gpa.free(registry_path);
     const saved = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(saved);
-    try std.testing.expect(std.mem.indexOf(u8, saved, "\"api\"") == null);
+    try std.testing.expect(std.mem.find(u8, saved, "\"api\"") == null);
 }
 
 test "legacy schema registry with legacy rollout attribution rewrites to normalized current schema" {
@@ -828,9 +844,9 @@ test "legacy schema registry with legacy rollout attribution rewrites to normali
     defer file.close();
     const contents = try file.readToEndAlloc(gpa, 10 * 1024 * 1024);
     defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"schema_version\": 4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"active_account_activated_at_ms\": 0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"last_attributed_rollout\"") == null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"schema_version\": 4") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"active_account_activated_at_ms\": 0") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"last_attributed_rollout\"") == null);
 }
 
 test "legacy current-layout registry version field rewrites to schema_version" {
@@ -860,10 +876,10 @@ test "legacy current-layout registry version field rewrites to schema_version" {
     defer file.close();
     const contents = try file.readToEndAlloc(gpa, 10 * 1024 * 1024);
     defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"schema_version\": 4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"interval_seconds\": 60") != null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"live\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"version\"") == null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"schema_version\": 4") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"interval_seconds\": 60") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"live\"") == null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"version\"") == null);
 }
 
 test "too-new schema version is rejected without rewriting registry" {
@@ -891,7 +907,7 @@ test "too-new schema version is rejected without rewriting registry" {
     defer file.close();
     const contents = try file.readToEndAlloc(gpa, 10 * 1024 * 1024);
     defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"schema_version\": 999") != null);
+    try std.testing.expect(std.mem.find(u8, contents, "\"schema_version\": 999") != null);
 }
 
 test "v2 registry migrates active email records to current schema" {
@@ -949,10 +965,10 @@ test "v2 registry migrates active email records to current schema" {
     defer file.close();
     const contents = try file.readToEndAlloc(gpa, 10 * 1024 * 1024);
     defer gpa.free(contents);
-    try std.testing.expect(std.mem.indexOf(u8, contents, "\"schema_version\": 4") != null);
-    const active_expect = try std.fmt.allocPrint(gpa, "\"active_account_key\": \"{s}\"", .{expected_account_id});
+    try std.testing.expect(std.mem.find(u8, contents, "\"schema_version\": 4") != null);
+    const active_expect = try gpa.print("\"active_account_key\": \"{s}\"", .{expected_account_id});
     defer gpa.free(active_expect);
-    try std.testing.expect(std.mem.indexOf(u8, contents, active_expect) != null);
+    try std.testing.expect(std.mem.find(u8, contents, active_expect) != null);
 }
 
 test "v2 migration rejects missing snapshots without double-free" {
@@ -1137,7 +1153,7 @@ test "auth backup rotation" {
 
     var i: usize = 0;
     while (i < 8) : (i += 1) {
-        const data = try std.fmt.allocPrint(gpa, "v{d}", .{i});
+        const data = try gpa.print("v{d}", .{i});
         defer gpa.free(data);
         try tmp.dir.writeFile(.{ .sub_path = "auth.json", .data = data });
         try registry.backupAuthIfChanged(gpa, codex_home, current, new_auth);
@@ -1454,7 +1470,7 @@ test "clean uses a whitelist and only removes non-current entries under accounts
     preserved_backup.close();
 }
 
-test "clean preserves the default export directory" {
+test "clean preserves the default export and codext cache directories" {
     const gpa = std.testing.allocator;
     var tmp = fs.tmpDir(.{});
     defer tmp.cleanup();
@@ -1465,20 +1481,26 @@ test "clean preserves the default export directory" {
 
     var reg = makeEmptyRegistry();
     defer reg.deinit(gpa);
+    try reg.accounts.append(gpa, try makeAccountRecord(gpa, "keep@example.com", "", .business, .chatgpt, 1));
     try registry.saveRegistry(gpa, codex_home, &reg);
 
-    const export_dir = try registry.defaultExportDirectory(gpa, codex_home);
-    defer gpa.free(export_dir);
-    const export_rel_path = try fs.path.join(gpa, &[_][]const u8{ "accounts", fs.path.basename(export_dir), "exported.auth.json" });
-    defer gpa.free(export_rel_path);
-    try tmp.dir.makePath(fs.path.dirname(export_rel_path).?);
-    try tmp.dir.writeFile(.{ .sub_path = export_rel_path, .data = "exported" });
+    try tmp.dir.makePath("accounts/backup");
+    try tmp.dir.writeFile(.{ .sub_path = "accounts/backup/user@example.com.auth.json", .data = "exported" });
+    try tmp.dir.makePath("accounts/codext-cli");
+    try tmp.dir.writeFile(.{ .sub_path = "accounts/codext-cli/codext", .data = "bin" });
+    try tmp.dir.writeFile(.{ .sub_path = "accounts/junk.txt", .data = "junk" });
+    try tmp.dir.makePath("accounts/stray-dir");
+    try tmp.dir.writeFile(.{ .sub_path = "accounts/stray-dir/old.txt", .data = "junk" });
 
     const summary = try registry.cleanAccountsBackups(gpa, codex_home);
-    try std.testing.expect(summary.stale_snapshot_files_removed == 0);
+    try std.testing.expect(summary.stale_snapshot_files_removed == 2);
 
-    var exported = try tmp.dir.openFile(export_rel_path, .{});
+    var exported = try tmp.dir.openFile("accounts/backup/user@example.com.auth.json", .{});
     exported.close();
+    var codext = try tmp.dir.openFile("accounts/codext-cli/codext", .{});
+    codext.close();
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile("accounts/junk.txt", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openDir("accounts/stray-dir", .{}));
 }
 
 test "clean preserves account snapshots when registry is missing" {
@@ -1651,7 +1673,7 @@ test "import auth path with json array imports each top-level item" {
     defer gpa.free(first_auth);
     const second_auth = try authJsonWithEmailPlan(gpa, "array-two@example.com", "team");
     defer gpa.free(second_auth);
-    const array_auth = try std.fmt.allocPrint(gpa, "[{s},{s}]", .{ first_auth, second_auth });
+    const array_auth = try gpa.print("[{s},{s}]", .{ first_auth, second_auth });
     defer gpa.free(array_auth);
     try tmp.dir.writeFile(.{ .sub_path = "imports/token_array.json", .data = array_auth });
 
@@ -1797,6 +1819,95 @@ test "import auth path with repeated single file reports updated on second impor
     try std.testing.expect(second.events.items[0].outcome == .updated);
 }
 
+test "import auth path rejects explicit aliases that conflict with selector rules" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("imports");
+
+    const auth_json = try authJsonWithEmailPlan(gpa, "aliased@example.com", "plus");
+    defer gpa.free(auth_json);
+    try tmp.dir.writeFile(.{ .sub_path = "imports/aliased.json", .data = auth_json });
+
+    const auth_path = try fs.path.join(gpa, &[_][]const u8{ codex_home, "imports", "aliased.json" });
+    defer gpa.free(auth_path);
+
+    const bad_aliases = [_][]const u8{ "", "123", "-flag", ":colon", "bad\talias", "bad\x01alias" };
+    for (bad_aliases) |bad_alias| {
+        var reg = makeEmptyRegistry();
+        defer reg.deinit(gpa);
+
+        var report = try registry.importAuthPath(gpa, codex_home, &reg, auth_path, bad_alias);
+        defer report.deinit(gpa);
+        try std.testing.expectEqual(@as(usize, 0), report.appliedCount());
+        try std.testing.expectEqual(@as(usize, 1), report.skipped);
+        const failure = report.failure orelse return error.TestExpectedEqual;
+        try std.testing.expect(failure == error.InvalidAlias);
+        try std.testing.expectEqual(@as(usize, 0), reg.accounts.items.len);
+    }
+}
+
+test "import auth path rejects an explicit alias already taken by another account" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("imports");
+
+    const auth_json = try authJsonWithEmailPlan(gpa, "incoming@example.com", "plus");
+    defer gpa.free(auth_json);
+    try tmp.dir.writeFile(.{ .sub_path = "imports/incoming.json", .data = auth_json });
+
+    const auth_path = try fs.path.join(gpa, &[_][]const u8{ codex_home, "imports", "incoming.json" });
+    defer gpa.free(auth_path);
+
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+    try reg.accounts.append(gpa, try makeAccountRecord(gpa, "other@example.com", "taken", .plus, .chatgpt, 1));
+
+    var report = try registry.importAuthPath(gpa, codex_home, &reg, auth_path, "taken");
+    defer report.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), report.appliedCount());
+    const failure = report.failure orelse return error.TestExpectedEqual;
+    try std.testing.expect(failure == error.DuplicateAlias);
+    try std.testing.expectEqual(@as(usize, 1), reg.accounts.items.len);
+}
+
+test "import auth path accepts re-import with the same explicit alias on the same account" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+    try tmp.dir.makePath("imports");
+
+    const auth_json = try authJsonWithEmailPlan(gpa, "same@example.com", "plus");
+    defer gpa.free(auth_json);
+    try tmp.dir.writeFile(.{ .sub_path = "imports/same.json", .data = auth_json });
+
+    const auth_path = try fs.path.join(gpa, &[_][]const u8{ codex_home, "imports", "same.json" });
+    defer gpa.free(auth_path);
+
+    var reg = makeEmptyRegistry();
+    defer reg.deinit(gpa);
+
+    var first = try registry.importAuthPath(gpa, codex_home, &reg, auth_path, "mine");
+    defer first.deinit(gpa);
+    try std.testing.expect(first.imported == 1);
+
+    var second = try registry.importAuthPath(gpa, codex_home, &reg, auth_path, "mine");
+    defer second.deinit(gpa);
+    try std.testing.expect(second.updated == 1);
+    try std.testing.expect(second.skipped == 0);
+    try std.testing.expectEqualStrings("mine", reg.accounts.items[0].alias);
+}
+
 test "import auth path with invalid single file keeps failure for non-zero exit handling" {
     const gpa = std.testing.allocator;
     var tmp = fs.tmpDir(.{});
@@ -1860,8 +1971,8 @@ test "import cpa path with single file converts to standard auth and keeps expli
     defer gpa.free(snapshot_path);
     const snapshot_data = try fixtures.readFileAlloc(gpa, snapshot_path);
     defer gpa.free(snapshot_data);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot_data, "\"tokens\": {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot_data, "\"refresh_token\": \"refresh-single-cpa@example.com\"") != null);
+    try std.testing.expect(std.mem.find(u8, snapshot_data, "\"tokens\": {") != null);
+    try std.testing.expect(std.mem.find(u8, snapshot_data, "\"refresh_token\": \"refresh-single-cpa@example.com\"") != null);
     try expectModeUnix(snapshot_path, 0o600);
 }
 
@@ -1902,7 +2013,7 @@ test "import cpa path with empty last refresh omits refresh metadata" {
     defer gpa.free(snapshot_path);
     const snapshot_data = try fixtures.readFileAlloc(gpa, snapshot_path);
     defer gpa.free(snapshot_data);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot_data, "\"last_refresh\"") == null);
+    try std.testing.expect(std.mem.find(u8, snapshot_data, "\"last_refresh\"") == null);
 }
 
 test "import cpa path with repeated single file reports updated on second import" {
@@ -2009,8 +2120,8 @@ test "export accounts writes standard auth snapshots to explicit directory" {
     defer gpa.free(exported_path);
     const exported = try fixtures.readFileAlloc(gpa, exported_path);
     defer gpa.free(exported);
-    try std.testing.expect(std.mem.indexOf(u8, exported, "\"tokens\": {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, exported, "\"refresh_token\": \"refresh-export-standard@example.com\"") != null);
+    try std.testing.expect(std.mem.find(u8, exported, "\"tokens\": {") != null);
+    try std.testing.expect(std.mem.find(u8, exported, "\"refresh_token\": \"refresh-export-standard@example.com\"") != null);
 }
 
 test "export accounts writes cpa token files to default backup directory" {
@@ -2052,8 +2163,38 @@ test "export accounts writes cpa token files to default backup directory" {
     defer gpa.free(exported_path);
     const exported = try fixtures.readFileAlloc(gpa, exported_path);
     defer gpa.free(exported);
-    try std.testing.expect(std.mem.indexOf(u8, exported, "\"refresh_token\": \"refresh-export-cpa@example.com\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, exported, "\"tokens\"") == null);
+    try std.testing.expect(std.mem.find(u8, exported, "\"refresh_token\": \"refresh-export-cpa@example.com\"") != null);
+    try std.testing.expect(std.mem.find(u8, exported, "\"tokens\"") == null);
+}
+
+test "sanitizeDisplayAlloc replaces control characters and invalid utf-8" {
+    const gpa = std.testing.allocator;
+
+    const plain = try registry.sanitizeDisplayAlloc(gpa, "Alice Example");
+    defer gpa.free(plain);
+    try std.testing.expectEqualStrings("Alice Example", plain);
+
+    const controls = try registry.sanitizeDisplayAlloc(gpa, "line\nbreak\x1b[31m red\x7f\x80");
+    defer gpa.free(controls);
+    try std.testing.expect(std.mem.indexOfScalar(u8, controls, '\n') == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, controls, 0x1b) == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, controls, 0x7f) == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, controls, 0x80) == null);
+    try std.testing.expectEqualStrings("line break [31m red  ", controls);
+
+    const truncated = try registry.sanitizeDisplayAlloc(gpa, "emoji \xf0\x9f");
+    defer gpa.free(truncated);
+    try std.testing.expect(std.mem.indexOfScalar(u8, truncated, 0xf0) == null);
+    try std.testing.expect(std.ascii.isPrint(truncated[truncated.len - 1]));
+}
+
+test "aliasFormatIssue rejects c1 controls and malformed utf-8 like the loader does" {
+    const c1 = "bad\xc2\x85alias";
+    try std.testing.expect(registry.aliasFormatIssue(c1) == .control_char);
+    try std.testing.expect(registry.aliasFormatIssue("bad\xf0\x9f") == .control_char);
+    try std.testing.expect(registry.aliasFormatIssue("bad\x80alias") == .control_char);
+    try std.testing.expect(registry.aliasFormatIssue("fine-alias_1") == null);
+    try std.testing.expect(registry.aliasFormatIssue("emoji-\xe2\x9c\x93") == null);
 }
 
 test "time format defaults for legacy and invalid settings and survives saving" {

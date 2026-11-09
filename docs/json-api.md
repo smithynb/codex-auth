@@ -28,12 +28,13 @@ and warnings use stderr and are not part of the JSON contract.
 ```shell
 codex-auth list [--api|--skip-api] [--active] --json
 codex-auth switch <query> --json
+codex-auth - --json
 codex-auth remove <selector> [<selector>...] --json
 codex-auth remove --all --json
 ```
 
-Interactive and live paths are not supported. `switch -` remains a human CLI
-shortcut and is rejected when combined with `--json`.
+Interactive and live paths are not supported. `codex-auth - --json` emits the
+same switch document for the previous-account shortcut.
 
 ## Account Objects
 
@@ -90,7 +91,7 @@ terminal views render in local time.
 `id_token` claim `https://api.openai.com/auth.chatgpt_subscription_active_until`
 and normalized to Unix seconds. It is `null` when the claim is absent, for
 example for API-key or free-plan accounts. The value is a snapshot: it changes
-only when the stored auth token is refreshed. The `PLAN EXPIRE` terminal column
+only when the stored auth token is refreshed. The `PLAN EXP` terminal column
 hides timestamps that are not in the future and renders `-`; JSON keeps the raw
 timestamp so callers can detect stale data.
 
@@ -161,9 +162,15 @@ presence or balance.
 {
   "schema_version": 1,
   "command": "switch",
-  "switched_to": {}
+  "switched_to": {},
+  "daemon": "restarted"
 }
 ```
+
+`daemon` reports the daemon coordination outcome for the switch (for example
+`reloaded`, `deferred`, `restarted`, or `restart_failed`; the emitted values
+are exercised in `tests/cli_integration_test.zig`). The document can still
+accompany exit code 1 when the daemon restart fails.
 
 ### Remove
 
@@ -237,6 +244,7 @@ Resolution status values are `resolved`, `ambiguous`, and `not_found`.
 |------------|---------|
 | `account_not_found` | Switch query has no match |
 | `ambiguous_query` | Switch query has multiple matches |
+| `no_previous_account` | `codex-auth -` ran with no stored previous account |
 | `selector_resolution_failed` | Remove selector resolution failed atomically |
 | `curl_unavailable` | Required API refresh cannot find curl |
 | `registry_error` | State failed before mutation began |

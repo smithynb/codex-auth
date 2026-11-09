@@ -35,7 +35,7 @@ pub const SwitchOptions = struct {
     live: bool = false,
     api_mode: ApiMode = .default,
     json: bool = false,
-    restart_daemon: bool = false,
+    no_restart_daemon: bool = false,
 };
 pub const RemoveOptions = struct {
     selectors: [][]const u8,
@@ -43,6 +43,9 @@ pub const RemoveOptions = struct {
     live: bool = false,
     api_mode: ApiMode = .default,
     json: bool = false,
+};
+pub const ResetOptions = struct {
+    selector: []u8,
 };
 pub const AliasSetOptions = struct {
     selector: []u8,
@@ -58,6 +61,16 @@ pub const AliasOptions = union(enum) {
 pub const CleanTarget = enum { accounts, background };
 pub const CleanOptions = struct {
     target: CleanTarget = .accounts,
+};
+pub const CompletionShell = enum {
+    bash,
+    zsh,
+    fish,
+    pwsh,
+};
+pub const CompleteRequest = struct {
+    args: []const []const u8,
+    descriptions: bool = true,
 };
 pub const LiveOptions = struct {
     interval_seconds: u16,
@@ -84,8 +97,10 @@ pub const HelpTopic = enum {
     export_auth,
     switch_account,
     remove_account,
+    reset_credits,
     alias,
     clean,
+    completion,
     config,
     app,
 };
@@ -97,8 +112,11 @@ pub const Command = union(enum) {
     export_auth: ExportOptions,
     switch_account: SwitchOptions,
     remove_account: RemoveOptions,
+    reset_credits: ResetOptions,
     alias: AliasOptions,
     clean: CleanOptions,
+    completion: CompletionShell,
+    complete_request: CompleteRequest,
     config: ConfigOptions,
     app: AppOptions,
     version: void,

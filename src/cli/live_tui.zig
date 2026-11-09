@@ -11,6 +11,38 @@ pub const tick_ms = tui_mod.live_ui_tick_ms;
 pub const key_buffer_len = 64;
 pub const min_mouse_wheel_rows = 6;
 pub const max_mouse_wheel_rows = 12;
+/// Lines a single wheel event scrolls. A real wheel notch (SGR `CSI <64 M`,
+/// a console `MOUSE_WHEELED`, a mux-forwarded arrow) is one event, so the
+/// step is small and fixed — unlike arrow-key scrolling, whose step doubles
+/// as the "one press" unit and scales with the viewport.
+pub const mouse_wheel_lines: usize = 3;
+
+/// Scroll events closer together than this belong to one continuous gesture
+/// — a trackpad flick or a spun wheel — rather than separate notches.
+pub const scroll_stream_gap_ms: i64 = 100;
+
+/// Tracks wheel-event timing so a dense gesture does not charge a full notch
+/// per event. Terminals report wheel direction but not magnitude: a mouse
+/// notch emits one event, a trackpad swipe emits dozens back to back. An
+/// isolated event scrolls `mouse_wheel_lines`; once events stream faster
+/// than the gap, each one is a single line, so a flick glides instead of
+/// teleporting.
+pub const ScrollStream = struct {
+    last_ms: i64 = 0,
+
+    pub fn step(self: *ScrollStream, now_ms: i64) usize {
+        // A negative delta (clock stepping backwards) is not "close
+        // together" — treat it as a fresh gesture rather than a stream.
+        const delta = now_ms - self.last_ms;
+        const streaming = self.last_ms != 0 and delta >= 0 and delta <= scroll_stream_gap_ms;
+        self.last_ms = now_ms;
+        return if (streaming) 1 else mouse_wheel_lines;
+    }
+};
+
+pub fn nowMs() i64 {
+    return std.Io.Timestamp.now(app_runtime.io(), .awake).toMilliseconds();
+}
 pub const ScrollDirection = enum { up, down };
 
 pub fn mouseWheelRows(max_rows: usize) usize {
@@ -101,8 +133,60 @@ pub fn listViewport(
     fixed_lines: usize,
     viewport_start: *usize,
 ) render.LiveListViewport {
+    return listViewportFollowing(terminal_rows, row_count, fixed_lines, viewport_start, null);
+}
+
+/// A range of rendered body lines that must stay visible together.
+pub const BodySpan = struct {
+    first: usize,
+    last: usize,
+};
+
+/// Keeps a span of body lines visible with the smallest scroll: a span above the
+/// viewport is top-aligned, a span reaching below it is bottom-aligned. When the
+/// span is taller than the viewport its end wins, because that is where the reset
+/// credits rail draws the redeem result.
+///
+/// `span` and the returned start share `renderListBodyViewport`'s index basis:
+/// lines of the rendered body after its column header, which include group
+/// header lines and any spliced rail lines. That is deliberately not
+/// `rows.items`, and not the data-row basis either: callers map a data index
+/// through `render.liveLineIndexForDataIndex` before building a span.
+pub fn followViewportStart(
+    row_count: usize,
+    max_rows: usize,
+    current_start: usize,
+    span: ?BodySpan,
+) usize {
+    const start = render.clampLiveViewportStart(row_count, max_rows, current_start);
+    const target = span orelse return start;
+    if (max_rows == 0 or row_count == 0) return start;
+    const last = @min(target.last, row_count - 1);
+    var followed = start;
+    if (last < followed) {
+        followed = target.first;
+    } else if (last >= followed + max_rows) {
+        followed = last + 1 -| max_rows;
+    } else if (target.first < followed and target.first + max_rows > last) {
+        // The rail's end is visible but its anchor row scrolled off, and the
+        // whole span fits: pull the window back up to the anchor row.
+        followed = target.first;
+    }
+    return render.clampLiveViewportStart(row_count, max_rows, followed);
+}
+
+/// Like `listViewport`, but scrolls the given body lines into view first. The
+/// reset credits rail uses this so a redeem can never be confirmed or reported
+/// on a line the user cannot see.
+pub fn listViewportFollowing(
+    terminal_rows: usize,
+    row_count: usize,
+    fixed_lines: usize,
+    viewport_start: *usize,
+    span: ?BodySpan,
+) render.LiveListViewport {
     const max_rows = maxTableRows(terminal_rows, fixed_lines);
-    viewport_start.* = render.clampLiveViewportStart(row_count, max_rows, viewport_start.*);
+    viewport_start.* = followViewportStart(row_count, max_rows, viewport_start.*, span);
     return .{
         .start_row = viewport_start.*,
         .max_rows = max_rows,
@@ -145,6 +229,7 @@ pub fn applyListViewportKey(
     max_rows: usize,
     viewport_start: *usize,
     wheel_rows: usize,
+    scroll_lines: usize,
     key: tui_mod.TuiInputKey,
 ) bool {
     switch (key) {
@@ -173,11 +258,11 @@ pub fn applyListViewportKey(
             return true;
         },
         .scroll_up => {
-            scrollListViewportBy(row_count, max_rows, viewport_start, .up, wheel_rows);
+            scrollListViewportBy(row_count, max_rows, viewport_start, .up, scroll_lines);
             return true;
         },
         .scroll_down => {
-            scrollListViewportBy(row_count, max_rows, viewport_start, .down, wheel_rows);
+            scrollListViewportBy(row_count, max_rows, viewport_start, .down, scroll_lines);
             return true;
         },
         .byte => |ch| switch (ch) {

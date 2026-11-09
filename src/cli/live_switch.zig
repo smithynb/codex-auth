@@ -55,6 +55,7 @@ pub fn runSwitchLiveActions(
     var number_len: usize = 0;
     var auto_switch_state = live_tui.LiveAutoSwitchState.init(controller.auto_switch);
     var viewport_start: usize = 0;
+    var scroll_stream: live_tui.ScrollStream = .{};
     var follow_selection = true;
     var needs_render = true;
     var last_render_second: i64 = -1;
@@ -101,7 +102,7 @@ pub fn runSwitchLiveActions(
                     replaceOptionalOwnedString(
                         allocator,
                         &action_message,
-                        try std.fmt.allocPrint(allocator, "Auto-switch failed: {s}", .{@errorName(err)}),
+                        try allocator.print("Auto-switch failed: {s}", .{@errorName(err)}),
                     );
                     replaceOptionalOwnedString(allocator, &selected_account_key, try allocator.dupe(u8, target_key));
                     number_len = 0;
@@ -126,7 +127,7 @@ pub fn runSwitchLiveActions(
             const rows = try rows_cache.ensureSelectable(allocator, borrowed);
             const total_accounts = accountRowCount(rows.items);
             const selected_idx = try live_tui.resolveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg);
-            const status_line = try controller.refresh.build_status_line(controller.refresh.context, allocator, borrowed);
+            const status_line = try controller.refresh.build_status_line(controller.refresh.context, allocator, borrowed, tui.terminalCols());
             defer allocator.free(status_line);
             const selected_display_idx = selectedDisplayIndexForRender(rows, selected_idx, number_buf[0..number_len]);
             const viewport = live_tui.selectableViewport(
@@ -146,7 +147,7 @@ pub fn runSwitchLiveActions(
                 &styled_frame,
                 borrowed.reg,
                 rows.items,
-                @max(@as(usize, 2), indexWidth(total_accounts)),
+                indexWidth(total_accounts),
                 rows.widths,
                 selected_display_idx,
                 status_line,
@@ -182,61 +183,67 @@ pub fn runSwitchLiveActions(
                         switch (key) {
                             .move_up => {
                                 if (try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .up)) {
-                                    number_len = 0;
                                     follow_selection = true;
                                 } else {
                                     live_tui.scrollListViewportBy(rows.items.len, page_rows, &viewport_start, .up, wheel_rows);
                                     follow_selection = false;
                                 }
+                                number_len = 0;
                                 needs_render = true;
                             },
                             .move_down => {
                                 if (try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .down)) {
-                                    number_len = 0;
                                     follow_selection = true;
                                 } else {
                                     live_tui.scrollListViewportBy(rows.items.len, page_rows, &viewport_start, .down, wheel_rows);
                                     follow_selection = false;
                                 }
+                                number_len = 0;
                                 needs_render = true;
                             },
                             .keyboard_up => {
-                                if (try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .up)) number_len = 0;
+                                _ = try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .up);
+                                number_len = 0;
                                 follow_selection = true;
                                 needs_render = true;
                             },
                             .keyboard_down => {
-                                if (try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .down)) number_len = 0;
+                                _ = try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .down);
+                                number_len = 0;
                                 follow_selection = true;
                                 needs_render = true;
                             },
                             .scroll_up => {
-                                live_tui.scrollListViewportBy(rows.items.len, page_rows, &viewport_start, .up, wheel_rows);
+                                live_tui.scrollListViewportBy(rows.items.len, page_rows, &viewport_start, .up, scroll_stream.step(live_tui.nowMs()));
                                 follow_selection = false;
                                 needs_render = true;
                             },
                             .scroll_down => {
-                                live_tui.scrollListViewportBy(rows.items.len, page_rows, &viewport_start, .down, wheel_rows);
+                                live_tui.scrollListViewportBy(rows.items.len, page_rows, &viewport_start, .down, scroll_stream.step(live_tui.nowMs()));
                                 follow_selection = false;
                                 needs_render = true;
                             },
                             .page_up => {
-                                if (try live_tui.moveSelectedIndexBy(allocator, &selected_account_key, rows, borrowed.reg, .up, page_rows)) number_len = 0;
+                                _ = try live_tui.moveSelectedIndexBy(allocator, &selected_account_key, rows, borrowed.reg, .up, page_rows);
+                                number_len = 0;
                                 follow_selection = true;
                                 needs_render = true;
                             },
                             .page_down => {
-                                if (try live_tui.moveSelectedIndexBy(allocator, &selected_account_key, rows, borrowed.reg, .down, page_rows)) number_len = 0;
+                                _ = try live_tui.moveSelectedIndexBy(allocator, &selected_account_key, rows, borrowed.reg, .down, page_rows);
+                                number_len = 0;
                                 follow_selection = true;
                                 needs_render = true;
                             },
                             .home => {
-                                if (try live_tui.moveSelectedIndexToEdge(allocator, &selected_account_key, rows, borrowed.reg, .up)) number_len = 0;
+                                _ = try live_tui.moveSelectedIndexToEdge(allocator, &selected_account_key, rows, borrowed.reg, .up);
+                                number_len = 0;
                                 follow_selection = true;
                                 needs_render = true;
                             },
                             .end => {
-                                if (try live_tui.moveSelectedIndexToEdge(allocator, &selected_account_key, rows, borrowed.reg, .down)) number_len = 0;
+                                _ = try live_tui.moveSelectedIndexToEdge(allocator, &selected_account_key, rows, borrowed.reg, .down);
+                                number_len = 0;
                                 follow_selection = true;
                                 needs_render = true;
                             },
@@ -252,7 +259,7 @@ pub fn runSwitchLiveActions(
                                     replaceOptionalOwnedString(
                                         allocator,
                                         &action_message,
-                                        try std.fmt.allocPrint(allocator, "Switch failed: {s}", .{@errorName(err)}),
+                                        try allocator.print("Switch failed: {s}", .{@errorName(err)}),
                                     );
                                     replaceOptionalOwnedString(allocator, &selected_account_key, try allocator.dupe(u8, target_key));
                                     number_len = 0;
@@ -288,13 +295,15 @@ pub fn runSwitchLiveActions(
                             .byte => |ch| {
                                 if (isQuitKey(ch)) return;
                                 if (ch == 'k') {
-                                    if (try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .up)) number_len = 0;
+                                    _ = try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .up);
+                                    number_len = 0;
                                     follow_selection = true;
                                     needs_render = true;
                                     continue;
                                 }
                                 if (ch == 'j') {
-                                    if (try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .down)) number_len = 0;
+                                    _ = try live_tui.moveSelectedIndex(allocator, &selected_account_key, rows, borrowed.reg, .down);
+                                    number_len = 0;
                                     follow_selection = true;
                                     needs_render = true;
                                     continue;

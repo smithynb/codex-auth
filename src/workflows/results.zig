@@ -3,6 +3,7 @@ const app_runtime = @import("../core/runtime.zig");
 const display_rows = @import("../tui/display.zig");
 const registry = @import("../registry/root.zig");
 const usage_refresh = @import("usage.zig");
+const codex_daemon = @import("codex_daemon.zig");
 
 pub const UsageSource = enum {
     api,
@@ -112,6 +113,7 @@ pub const ListResult = struct {
 
 pub const SwitchResult = struct {
     switched_to: AccountView,
+    daemon: codex_daemon.Outcome,
 
     pub fn deinit(self: *SwitchResult, allocator: std.mem.Allocator) void {
         self.switched_to.deinit(allocator);
@@ -188,30 +190,14 @@ pub fn buildSwitchResult(
     allocator: std.mem.Allocator,
     reg: *const registry.Registry,
     account_key: []const u8,
+    daemon: codex_daemon.Outcome,
 ) !SwitchResult {
     var switched_to = try buildAccountViewForKey(allocator, reg, null, account_key);
     errdefer switched_to.deinit(allocator);
 
     return .{
         .switched_to = switched_to,
-    };
-}
-
-pub fn buildRemoveResult(
-    allocator: std.mem.Allocator,
-    reg_before_remove: *const registry.Registry,
-    selected: []const usize,
-    new_active_account_key: ?[]const u8,
-) !RemoveResult {
-    const removed = try buildAccountViewsForIndices(allocator, reg_before_remove, null, selected);
-    errdefer deinitAccountViews(allocator, removed);
-
-    const new_active = try dupeOptional(allocator, new_active_account_key);
-    errdefer if (new_active) |key| allocator.free(key);
-
-    return .{
-        .removed = removed,
-        .new_active_account_key = new_active,
+        .daemon = daemon,
     };
 }
 
@@ -318,14 +304,9 @@ fn buildUsageView(
         .credits = credits,
         .reset_credits = snapshot.reset_credits,
         .reset_credits_expires_at = snapshot.reset_credits_expires_at,
-        .reset_credit = try cloneResetCreditCardsView(allocator, rec.last_usage),
+        .reset_credit = if (snapshot.reset_credit) |cards| try registry.cloneResetCreditCards(allocator, cards) else null,
         .refresh = refresh,
     };
-}
-fn cloneResetCreditCardsView(allocator: std.mem.Allocator, snapshot: ?registry.RateLimitSnapshot) !?[]registry.ResetCreditCard {
-    const snapshot_value = snapshot orelse return null;
-    const cards = snapshot_value.reset_credit orelse return null;
-    return try registry.cloneResetCreditCards(allocator, cards);
 }
 
 fn cloneCreditsView(allocator: std.mem.Allocator, credits: ?registry.CreditsSnapshot) !?CreditsView {
@@ -426,8 +407,7 @@ fn buildUsageWarnings(
         if (idx >= reg.accounts.items.len) continue;
         const email = try display_rows.redactEmailAlloc(allocator, reg.accounts.items[idx].email);
         defer allocator.free(email);
-        const warning = try std.fmt.allocPrint(
-            allocator,
+        const warning = try allocator.print(
             "usage refresh failed for {s}: {s}",
             .{ email, outcome.error_name.? },
         );

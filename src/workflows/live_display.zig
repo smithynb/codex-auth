@@ -167,20 +167,6 @@ pub fn mergeSwitchLiveRefreshIntoLatest(
     return changed;
 }
 
-pub fn takeOwnedSwitchSelectionDisplay(
-    allocator: std.mem.Allocator,
-    reg: registry.Registry,
-    usage_state: *ForegroundUsageRefreshState,
-) cli.live.OwnedSwitchSelectionDisplay {
-    const usage_overrides = usage_state.usage_overrides;
-    allocator.free(usage_state.outcomes);
-    usage_state.* = undefined;
-    return .{
-        .reg = reg,
-        .usage_overrides = usage_overrides,
-    };
-}
-
 pub fn cloneAccountRecord(allocator: std.mem.Allocator, rec: *const registry.AccountRecord) !registry.AccountRecord {
     const account_key = try allocator.dupe(u8, rec.account_key);
     errdefer allocator.free(account_key);
@@ -460,6 +446,7 @@ pub fn loadSwitchSelectionDisplay(
         initial_policy.account_api_enabled,
     ) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.Canceled => return err,
         else => {
             if (strict_refresh) return err;
             refreshed.deinit(allocator);
@@ -479,6 +466,7 @@ pub fn loadSwitchSelectionDisplay(
         false,
     ) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.Canceled => return err,
         else => {
             if (strict_refresh) return err;
             refreshed.deinit(allocator);
@@ -497,6 +485,7 @@ pub fn loadSwitchSelectionDisplay(
         false,
     ) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.Canceled => return err,
         else => {
             if (strict_refresh) return err;
             usage_state.deinit(allocator);

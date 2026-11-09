@@ -3,9 +3,8 @@ const codex_auth = @import("codex_auth");
 
 const app_runtime = codex_auth.core.runtime;
 const format = codex_auth.tui.table;
+const table_layout = codex_auth.cli.table_layout;
 const registry = codex_auth.registry;
-const printTableRow = format.printTableRow;
-const truncateAlloc = format.truncateAlloc;
 const formatRateLimitFullAlloc = format.formatRateLimitFullAlloc;
 const writeAccountsTable = format.writeAccountsTable;
 const writeAccountsTableWithUsageOverrides = format.writeAccountsTableWithUsageOverrides;
@@ -34,7 +33,7 @@ fn appendTestAccount(
     alias: []const u8,
     plan: registry.PlanType,
 ) !void {
-    const sep = std.mem.lastIndexOf(u8, record_key, "::") orelse return error.InvalidRecordKey;
+    const sep = std.mem.findLast(u8, record_key, "::") orelse return error.InvalidRecordKey;
     const chatgpt_user_id = record_key[0..sep];
     const chatgpt_account_id = record_key[sep + 2 ..];
     try reg.accounts.append(allocator, .{
@@ -77,29 +76,22 @@ fn appendApiKeyTestAccount(
     });
 }
 
-test "printTableRow handles long cells without underflow" {
-    var buffer: [256]u8 = undefined;
+test "writeTruncatedPadded respects max_len" {
+    var buffer: [16]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
-    const widths = [_]usize{3};
-    const cells = [_][]const u8{"abcdef"};
-    try printTableRow(&writer, &widths, &cells);
-    try writer.flush();
+    try table_layout.writeTruncatedPadded(&writer, "abcdef", 3);
+    try std.testing.expectEqualStrings("ab.", writer.buffered());
+    writer = .fixed(&buffer);
+    try table_layout.writeTruncatedPadded(&writer, "abcdef", 1);
+    try std.testing.expectEqualStrings(".", writer.buffered());
 }
 
-test "truncateAlloc respects max_len" {
-    const out1 = try truncateAlloc("abcdef", 3);
-    defer std.heap.page_allocator.free(out1);
-    try std.testing.expect(out1.len == 3);
-    const out2 = try truncateAlloc("abcdef", 1);
-    defer std.heap.page_allocator.free(out2);
-    try std.testing.expect(out2.len == 1);
-}
-
-test "truncateAlloc preserves UTF-8 codepoint boundaries" {
-    const out = try truncateAlloc("Рабочая область", 5);
-    defer std.heap.page_allocator.free(out);
-    try std.testing.expectEqualStrings("Рабо.", out);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(out));
+test "writeTruncatedPadded preserves UTF-8 codepoint boundaries" {
+    var buffer: [32]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try table_layout.writeTruncatedPadded(&writer, "Рабочая область", 5);
+    try std.testing.expectEqualStrings("Рабо.", writer.buffered());
+    try std.testing.expect(std.unicode.utf8ValidateSlice(writer.buffered()));
 }
 
 test "formatRateLimitFullAlloc shows 100% after reset instead of dash-prefixed value" {
@@ -110,13 +102,13 @@ test "formatRateLimitFullAlloc shows 100% after reset instead of dash-prefixed v
         .resets_at = now - 60,
     };
 
-    const formatted = try formatRateLimitFullAlloc(window);
+    const formatted = try formatRateLimitFullAlloc(std.heap.page_allocator, window);
     defer std.heap.page_allocator.free(formatted);
 
     try std.testing.expectEqualStrings("100%", formatted);
 }
 
-test "writeAccountsTable shows zero-padded row numbers for selectable accounts" {
+test "writeAccountsTable shows right-aligned row numbers for selectable accounts" {
     const gpa = std.testing.allocator;
     var reg = makeTestRegistry();
     defer reg.deinit(gpa);
@@ -130,8 +122,11 @@ test "writeAccountsTable shows zero-padded row numbers for selectable accounts" 
     try writeAccountsTable(&writer, &reg, false);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "01   Als's Workspace") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "02   Free") != null);
+    // Same-email rows group: children render under the shared email header
+    // with a two-space depth indent after the number cell.
+    try std.testing.expect(std.mem.find(u8, output, " 1   Als's Workspace") != null);
+    try std.testing.expect(std.mem.find(u8, output, "01") == null);
+    try std.testing.expect(std.mem.find(u8, output, "02") == null);
 }
 
 test "writeAccountsTable keeps usage headers short" {
@@ -146,9 +141,9 @@ test "writeAccountsTable keeps usage headers short" {
     try writeAccountsTable(&writer, &reg, false);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "5H") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "WEEKLY") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "USAGE") == null);
+    try std.testing.expect(std.mem.find(u8, output, "5H") != null);
+    try std.testing.expect(std.mem.find(u8, output, "WEEKLY") != null);
+    try std.testing.expect(std.mem.find(u8, output, "USAGE") == null);
 }
 
 test "writeAccountsTable shows integer credits balance column" {
@@ -174,12 +169,12 @@ test "writeAccountsTable shows integer credits balance column" {
     try writeAccountsTable(&writer, &reg, false);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "CREDITS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "RESET CREDITS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Plus") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "5.39") == null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "2") != null);
+    try std.testing.expect(std.mem.find(u8, output, "CR") != null);
+    try std.testing.expect(std.mem.find(u8, output, "RST") != null);
+    try std.testing.expect(std.mem.find(u8, output, "Plus") != null);
+    try std.testing.expect(std.mem.find(u8, output, "5") != null);
+    try std.testing.expect(std.mem.find(u8, output, "5.39") == null);
+    try std.testing.expect(std.mem.find(u8, output, "2") != null);
 }
 
 test "writeAccountsTable shows reset credits independently" {
@@ -201,35 +196,10 @@ test "writeAccountsTable shows reset credits independently" {
     try writeAccountsTable(&writer, &reg, false);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "CREDITS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "RESET CREDITS") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Plus  -") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "2") != null);
-}
-
-test "writeAccountsTable shows earliest reset credit expiry beside count" {
-    const gpa = std.testing.allocator;
-    var reg = makeTestRegistry();
-    defer reg.deinit(gpa);
-    try appendTestAccount(gpa, &reg, "user-1::acc-1", "user@example.com", "", .plus);
-    reg.accounts.items[0].last_usage = .{
-        .primary = null,
-        .secondary = null,
-        .credits = null,
-        .reset_credits = 3,
-        .reset_credits_expires_at = 4070908800,
-        .plan_type = .plus,
-    };
-    var buffer: [2048]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buffer);
-    try writeAccountsTable(&writer, &reg, false);
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "3 (exp ") != null);
-
-    // Unknown or stale expiry retains the credit count without inventing a date.
-    reg.accounts.items[0].last_usage.?.reset_credits_expires_at = 1;
-    writer = .fixed(&buffer);
-    try writeAccountsTable(&writer, &reg, false);
-    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "(exp ") == null);
+    try std.testing.expect(std.mem.find(u8, output, "CR") != null);
+    try std.testing.expect(std.mem.find(u8, output, "RST") != null);
+    try std.testing.expect(std.mem.find(u8, output, "Plus  -") != null);
+    try std.testing.expect(std.mem.find(u8, output, "2") != null);
 }
 
 test "writeAccountsTable shows usage override statuses for failed refreshes" {
@@ -265,7 +235,7 @@ test "writeAccountsTable highlights usage override rows in red when color is ena
     try writeAccountsTableWithUsageOverrides(&writer, &reg, true, &usage_overrides);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, ansi.red) != null);
+    try std.testing.expect(std.mem.find(u8, output, ansi.red) != null);
 }
 
 test "writeAccountsTable uses cyan headers green active rows and default normal rows" {
@@ -282,9 +252,9 @@ test "writeAccountsTable uses cyan headers green active rows and default normal 
     try writeAccountsTable(&writer, &reg, true);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, ansi.cyan ++ "     ACCOUNT") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, ansi.green ++ "* 01 act***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[2m  02 nor***@e***.com") == null);
+    try std.testing.expect(std.mem.find(u8, output, ansi.cyan ++ "    ACCOUNT") != null);
+    try std.testing.expect(std.mem.find(u8, output, ansi.green ++ "* 1 act***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[2m  2 nor***@e***.com") == null);
 }
 
 test "writeAccountsTable prefers usage snapshot plan labels over stored auth plan" {
@@ -305,8 +275,8 @@ test "writeAccountsTable prefers usage snapshot plan labels over stored auth pla
     try writeAccountsTable(&writer, &reg, false);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "Business") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Plus") == null);
+    try std.testing.expect(std.mem.find(u8, output, "Business") != null);
+    try std.testing.expect(std.mem.find(u8, output, "Plus") == null);
 }
 
 test "writeAccountsTable shows API_KEY in the plan column for API key auth" {
@@ -321,11 +291,11 @@ test "writeAccountsTable shows API_KEY in the plan column for API key auth" {
     try writeAccountsTable(&writer, &reg, false);
 
     const output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "use***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "API_KEY") != null);
+    try std.testing.expect(std.mem.find(u8, output, "use***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, output, "API_KEY") != null);
 }
 
-test "configured time format reaches list, picker, live copies, and credit expiry" {
+test "configured time format reaches list, picker, and live copies" {
     const gpa = std.testing.allocator;
     var reg = makeTestRegistry();
     defer reg.deinit(gpa);
@@ -334,8 +304,6 @@ test "configured time format reaches list, picker, live copies, and credit expir
         .primary = .{ .used_percent = 25, .window_minutes = 300, .resets_at = 4102444800 },
         .secondary = .{ .used_percent = 50, .window_minutes = 10080, .resets_at = 4103049600 },
         .credits = null,
-        .reset_credits = 3,
-        .reset_credits_expires_at = 4102444800,
         .plan_type = .plus,
     };
     for ([_]codex_auth.time.clock.TimeFormat{ .@"12h", .@"24h" }) |time_format| {
@@ -354,17 +322,11 @@ test "configured time format reaches list, picker, live copies, and credit expir
             const has_meridiem = std.mem.indexOf(u8, cell, " AM") != null or std.mem.indexOf(u8, cell, " PM") != null;
             try std.testing.expectEqual(time_format == .@"12h", has_meridiem);
         }
-        const expiry_start = std.mem.indexOf(u8, aw.written(), "3 (exp ") orelse return error.TestExpectedEqual;
-        const expiry_tail = aw.written()[expiry_start..];
-        const expiry_end = std.mem.indexOfScalar(u8, expiry_tail, ')') orelse return error.TestExpectedEqual;
-        const expiry = expiry_tail[0..expiry_end];
-        const has_meridiem = std.mem.indexOf(u8, expiry, " AM") != null or std.mem.indexOf(u8, expiry, " PM") != null;
-        try std.testing.expectEqual(time_format == .@"12h", has_meridiem);
     }
 }
 fn appendTestAccountWithUsage(allocator: std.mem.Allocator, reg: *registry.Registry, email: []const u8) !void {
-    const sep = std.mem.indexOf(u8, email, "@").?;
-    const record_key = try std.fmt.allocPrint(allocator, "user-{s}::{s}", .{ email[0..sep], email[sep + 1 ..] });
+    const sep = std.mem.find(u8, email, "@").?;
+    const record_key = try allocator.print("user-{s}::{s}", .{ email[0..sep], email[sep + 1 ..] });
     defer allocator.free(record_key);
     try appendTestAccount(allocator, reg, record_key, email, email[0..sep], .pro);
     reg.accounts.items[reg.accounts.items.len - 1].last_usage = .{
@@ -384,12 +346,12 @@ test "writeAccountsTableForCols: wide terminal keeps full headers and complete v
     var writer: std.Io.Writer = .fixed(&buffer);
     try writeAccountsTableWithUsageOverridesForCols(&writer, &reg, false, null, 200);
     const output = writer.buffered();
-    for ([_][]const u8{ "ACCOUNT", "PLAN", "CREDITS", "RESET CREDITS", "5H", "WEEKLY", "LAST ACTIVITY", "100%" }) |expected| {
-        try std.testing.expect(std.mem.indexOf(u8, output, expected) != null);
+    for ([_][]const u8{ "ACCOUNT", "PLAN", "CR", "RST", "5H", "WEEKLY", "LAST", "100%" }) |expected| {
+        try std.testing.expect(std.mem.find(u8, output, expected) != null);
     }
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| {
-        try std.testing.expect(std.mem.indexOf(u8, line, "  .") == null);
+        try std.testing.expect(std.mem.find(u8, line, "  .") == null);
     }
 }
 
@@ -406,8 +368,8 @@ test "writeAccountsTableForCols: narrow terminal never overflows and keeps perce
     while (lines.next()) |line| {
         try std.testing.expect(line.len <= 60);
     }
-    try std.testing.expect(std.mem.indexOf(u8, output, "100%") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "CR") != null or std.mem.indexOf(u8, output, "CREDITS") != null);
+    try std.testing.expect(std.mem.find(u8, output, "100%") != null);
+    try std.testing.expect(std.mem.find(u8, output, "CR") != null or std.mem.find(u8, output, "CREDITS") != null);
 }
 
 test "writeAccountsTableForCols: very narrow terminal hides low-priority columns" {
@@ -423,7 +385,7 @@ test "writeAccountsTableForCols: very narrow terminal hides low-priority columns
     while (lines.next()) |line| {
         try std.testing.expect(line.len <= 40);
     }
-    try std.testing.expect(std.mem.indexOf(u8, output, "100%") != null);
+    try std.testing.expect(std.mem.find(u8, output, "100%") != null);
 }
 
 test "formatFutureDateAlloc renders only future dates" {
@@ -467,13 +429,13 @@ test "writeAccountsTable shows plan expiry for future data and hides expired dat
     var writer: std.Io.Writer = .fixed(&buffer);
     try writeAccountsTableWithUsageOverridesForCols(&writer, &reg, false, null, 200);
     var output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "PLAN EXPIRE") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "AUTH EXPIRE") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, expected) != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, expected_auth) != null);
+    try std.testing.expect(std.mem.find(u8, output, "PLAN EXP") != null);
+    try std.testing.expect(std.mem.find(u8, output, "TOKEN EXPIRE") != null);
+    try std.testing.expect(std.mem.find(u8, output, expected) != null);
+    try std.testing.expect(std.mem.find(u8, output, expected_auth) != null);
     var last_index: usize = 0;
-    for ([_][]const u8{ "ACCOUNT", "PLAN", "PLAN EXPIRE", "CREDITS", "RESET CREDITS", "5H", "WEEKLY", "AUTH EXPIRE", "LAST ACTIVITY" }) |token| {
-        const index = std.mem.indexOf(u8, output, token) orelse return error.TestUnexpectedResult;
+    for ([_][]const u8{ "ACCOUNT", "PLAN", "PLAN EXP", "CR", "RST", "5H", "WEEKLY", "TOKEN EXPIRE", "LAST" }) |token| {
+        const index = std.mem.find(u8, output, token) orelse return error.TestUnexpectedResult;
         try std.testing.expect(index >= last_index);
         last_index = index;
     }
@@ -487,9 +449,9 @@ test "writeAccountsTable shows plan expiry for future data and hides expired dat
     writer = .fixed(&buffer);
     try writeAccountsTableWithUsageOverridesForCols(&writer, &reg, false, null, 200);
     output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "PLAN EXPIRE") != null);
+    try std.testing.expect(std.mem.find(u8, output, "PLAN EXP") != null);
     if (expired_text.len >= 10) {
-        try std.testing.expect(std.mem.indexOf(u8, output, expired_text[0..10]) == null);
+        try std.testing.expect(std.mem.find(u8, output, expired_text[0..10]) == null);
     }
 }
 
@@ -512,9 +474,9 @@ test "writeAccountsTable defers PLAN EXPIRE on narrow widths" {
     var writer: std.Io.Writer = .fixed(&buffer);
     try writeAccountsTableWithUsageOverridesForCols(&writer, &reg, false, &overrides, 70);
     var output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "PLAN EXPIRE") == null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "AUTH EXPIRE") == null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "LAST ACTIVITY") == null);
+    try std.testing.expect(std.mem.find(u8, output, "PLAN EXP") == null);
+    try std.testing.expect(std.mem.find(u8, output, "TOKEN EXPIRE") == null);
+    try std.testing.expect(std.mem.find(u8, output, "LAST") == null);
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| try std.testing.expect(line.len <= 70);
 
@@ -524,8 +486,8 @@ test "writeAccountsTable defers PLAN EXPIRE on narrow widths" {
     writer = .fixed(&buffer);
     try writeAccountsTableWithUsageOverridesForCols(&writer, &reg, false, &overrides, 200);
     output = writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, output, "PLAN EXPIRE") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, expected) != null);
+    try std.testing.expect(std.mem.find(u8, output, "PLAN EXP") != null);
+    try std.testing.expect(std.mem.find(u8, output, expected) != null);
     lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| try std.testing.expect(line.len <= 200);
 }

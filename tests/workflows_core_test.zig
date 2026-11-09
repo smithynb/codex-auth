@@ -53,7 +53,7 @@ fn appendAccount(
     alias: []const u8,
     plan: registry.PlanType,
 ) !void {
-    const sep = std.mem.lastIndexOf(u8, record_key, "::") orelse return error.InvalidRecordKey;
+    const sep = std.mem.findLast(u8, record_key, "::") orelse return error.InvalidRecordKey;
     const chatgpt_user_id = record_key[0..sep];
     const chatgpt_account_id = record_key[sep + 2 ..];
     try reg.accounts.append(allocator, .{
@@ -114,8 +114,7 @@ fn authJsonWithIds(
     chatgpt_account_id: []const u8,
 ) ![]u8 {
     const header = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
-    const payload = try std.fmt.allocPrint(
-        allocator,
+    const payload = try allocator.print(
         "{{\"email\":\"{s}\",\"https://api.openai.com/auth\":{{\"chatgpt_account_id\":\"{s}\",\"chatgpt_user_id\":\"{s}\",\"user_id\":\"{s}\",\"chatgpt_plan_type\":\"{s}\"}}}}",
         .{ email, chatgpt_account_id, chatgpt_user_id, chatgpt_user_id, plan },
     );
@@ -128,8 +127,7 @@ fn authJsonWithIds(
     const jwt = try std.mem.concat(allocator, u8, &[_][]const u8{ header_b64, ".", payload_b64, ".sig" });
     defer allocator.free(jwt);
 
-    return try std.fmt.allocPrint(
-        allocator,
+    return try allocator.print(
         "{{\"tokens\":{{\"access_token\":\"access-{s}\",\"account_id\":\"{s}\",\"id_token\":\"{s}\"}}}}",
         .{ email, chatgpt_account_id, jwt },
     );
@@ -145,8 +143,7 @@ fn authJsonWithIdsAndLastRefresh(
     last_refresh: []const u8,
 ) ![]u8 {
     const header = "{\"alg\":\"none\",\"typ\":\"JWT\"}";
-    const payload = try std.fmt.allocPrint(
-        allocator,
+    const payload = try allocator.print(
         "{{\"email\":\"{s}\",\"https://api.openai.com/auth\":{{\"chatgpt_account_id\":\"{s}\",\"chatgpt_user_id\":\"{s}\",\"user_id\":\"{s}\",\"chatgpt_plan_type\":\"{s}\"}}}}",
         .{ email, chatgpt_account_id, chatgpt_user_id, chatgpt_user_id, plan },
     );
@@ -159,8 +156,7 @@ fn authJsonWithIdsAndLastRefresh(
     const jwt = try std.mem.concat(allocator, u8, &[_][]const u8{ header_b64, ".", payload_b64, ".sig" });
     defer allocator.free(jwt);
 
-    return try std.fmt.allocPrint(
-        allocator,
+    return try allocator.print(
         "{{\"tokens\":{{\"access_token\":\"{s}\",\"account_id\":\"{s}\",\"id_token\":\"{s}\"}},\"last_refresh\":\"{s}\"}}",
         .{ access_token, chatgpt_account_id, jwt, last_refresh },
     );
@@ -202,7 +198,7 @@ fn writeAccountSnapshotWithIds(
     chatgpt_user_id: []const u8,
     chatgpt_account_id: []const u8,
 ) !void {
-    const account_key = try std.fmt.allocPrint(allocator, "{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
+    const account_key = try allocator.print("{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
     defer allocator.free(account_key);
 
     try registry.ensureAccountsDir(allocator, codex_home);
@@ -224,7 +220,7 @@ fn writeAccountSnapshotWithIdsAndLastRefresh(
     access_token: []const u8,
     last_refresh: []const u8,
 ) !void {
-    const account_key = try std.fmt.allocPrint(allocator, "{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
+    const account_key = try allocator.print("{s}::{s}", .{ chatgpt_user_id, chatgpt_account_id });
     defer allocator.free(account_key);
 
     try registry.ensureAccountsDir(allocator, codex_home);
@@ -422,12 +418,12 @@ test "Scenario: Given Windows GUI app launch when building script then environme
     );
     defer gpa.free(script);
 
-    try std.testing.expect(std.mem.indexOf(u8, script, "$env:CODEX_HOME='C:\\Users\\Loong\\.codext'") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "Start-Process -FilePath $app -WorkingDirectory $wd") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "shell:AppsFolder") == null);
+    try std.testing.expect(std.mem.find(u8, script, "$env:CODEX_HOME='C:\\Users\\Loong\\.codext'") != null);
+    try std.testing.expect(std.mem.find(u8, script, "Start-Process -FilePath $app -WorkingDirectory $wd") != null);
+    try std.testing.expect(std.mem.find(u8, script, "shell:AppsFolder") == null);
 }
 
-const codext_test_platform_suffix = if (builtin.cpu.arch == .aarch64) "linux-arm64" else "linux-x64";
+const codext_test_platform_suffix = if (builtin.target.cpu.arch == .aarch64) "linux-arm64" else "linux-x64";
 
 test "Scenario: Given codex-package archive when installing managed codext then package tree is preserved" {
     const gpa = std.testing.allocator;
@@ -446,9 +442,9 @@ test "Scenario: Given codex-package archive when installing managed codext then 
     try tmp.dir.writeFile(.{ .sub_path = "cache/codex-" ++ codext_test_platform_suffix, .data = "legacy" });
     const root_dir = try tmp.dir.realpathAlloc(gpa, ".");
     defer gpa.free(root_dir);
-    const cache_root = try std.fs.path.join(gpa, &.{ root_dir, "cache" });
+    const cache_root = try std.Io.Dir.path.join(gpa, &.{ root_dir, "cache" });
     defer gpa.free(cache_root);
-    const extract_dir = try std.fs.path.join(gpa, &.{ root_dir, "extract" });
+    const extract_dir = try std.Io.Dir.path.join(gpa, &.{ root_dir, "extract" });
     defer gpa.free(extract_dir);
 
     try app_workflow.test_support.installManagedCodext(gpa, cache_root, extract_dir, .wsl);
@@ -456,7 +452,7 @@ test "Scenario: Given codex-package archive when installing managed codext then 
     const installed = try app_workflow.test_support.managedCodextExecutablePathAlloc(gpa, cache_root, .wsl);
     defer gpa.free(installed);
     const package_dir_name = "codex-" ++ codext_test_platform_suffix ++ "-package";
-    const expected = try std.fs.path.join(gpa, &.{ cache_root, package_dir_name, "bin", "codext" });
+    const expected = try std.Io.Dir.path.join(gpa, &.{ cache_root, package_dir_name, "bin", "codext" });
     defer gpa.free(expected);
     try std.testing.expectEqualStrings(expected, installed);
     const manifest_stat = tmp.dir.statFile("cache/" ++ package_dir_name ++ "/codex-package.json") catch return error.TestExpectedEqual;
@@ -480,9 +476,9 @@ test "Scenario: Given flat archive without codex-package.json when installing ma
     try tmp.dir.writeFile(.{ .sub_path = "extract/codext", .data = "codex" });
     const root_dir = try tmp.dir.realpathAlloc(gpa, ".");
     defer gpa.free(root_dir);
-    const cache_root = try std.fs.path.join(gpa, &.{ root_dir, "cache" });
+    const cache_root = try std.Io.Dir.path.join(gpa, &.{ root_dir, "cache" });
     defer gpa.free(cache_root);
-    const extract_dir = try std.fs.path.join(gpa, &.{ root_dir, "extract" });
+    const extract_dir = try std.Io.Dir.path.join(gpa, &.{ root_dir, "extract" });
     defer gpa.free(extract_dir);
 
     try std.testing.expectError(
@@ -500,9 +496,9 @@ test "Scenario: Given archive without codex binary when installing managed codex
     try tmp.dir.makePath("extract");
     const root_dir = try tmp.dir.realpathAlloc(gpa, ".");
     defer gpa.free(root_dir);
-    const cache_root = try std.fs.path.join(gpa, &.{ root_dir, "cache" });
+    const cache_root = try std.Io.Dir.path.join(gpa, &.{ root_dir, "cache" });
     defer gpa.free(cache_root);
-    const extract_dir = try std.fs.path.join(gpa, &.{ root_dir, "extract" });
+    const extract_dir = try std.Io.Dir.path.join(gpa, &.{ root_dir, "extract" });
     defer gpa.free(extract_dir);
 
     try std.testing.expectError(
@@ -547,6 +543,129 @@ test "Scenario: Given switch query with a display number when resolving locally 
 
     switch (resolution) {
         .direct => |account_key| try std.testing.expectEqualStrings(secondary_record_key, account_key),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query equal to a colon alias when resolving locally then the exact alias wins" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "alpha@example.com", "01:work", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "beta@example.com", "beta", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "01:work");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .direct => |account_key| try std.testing.expectEqualStrings(primary_record_key, account_key),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query that is a colon alias fragment when resolving locally then it fuzzy matches" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "alpha@example.com", "dev", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "beta@example.com", "team:development", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "team:dev");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .direct => |account_key| try std.testing.expectEqualStrings(secondary_record_key, account_key),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query matching a shared colon alias when resolving locally then it reports ambiguity" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "alpha@example.com", "01:team", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "beta@example.com", "01:team", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "01:team");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .multiple => |matches| try std.testing.expectEqual(@as(usize, 2), matches.items.len),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query matching a numeric alias when resolving locally then the row number wins" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "alpha@example.com", "2", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "beta@example.com", "beta", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "2");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .direct => |account_key| try std.testing.expectEqualStrings(secondary_record_key, account_key),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query with an exact alias shared with an email prefix when resolving locally then the alias wins" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "alpha@example.com", "dev", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "dev-ops@example.com", "", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "dev");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .direct => |account_key| try std.testing.expectEqualStrings(primary_record_key, account_key),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query with a duplicated exact email when resolving locally then it stays ambiguous" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "same@example.com", "team-a", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "same@example.com", "team-b", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "same@example.com");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .multiple => |matches| {
+            try std.testing.expectEqual(@as(usize, 2), matches.items.len);
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "Scenario: Given switch query with a duplicated exact alias when resolving locally then it stays ambiguous" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+
+    try appendAccount(gpa, &reg, primary_record_key, "alpha@example.com", "team", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "beta@example.com", "team", .plus);
+
+    var resolution = try main_mod.resolveSwitchQueryLocally(gpa, &reg, "team");
+    defer resolution.deinit(gpa);
+
+    switch (resolution) {
+        .multiple => |matches| {
+            try std.testing.expectEqual(@as(usize, 2), matches.items.len);
+        },
         else => return error.TestExpectedEqual,
     }
 }
@@ -823,6 +942,70 @@ test "Scenario: Given active-only foreground usage refresh then only the active 
     try std.testing.expect(reg.accounts.items[1].last_usage != null);
 }
 
+test "Scenario: Given canceled per-account usage fetch when refreshing foreground usage then cancellation propagates" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+
+    const TestUsageFetcher = struct {
+        fn fetch(allocator: std.mem.Allocator, auth_path: []const u8) !usage_api.UsageFetchResult {
+            _ = allocator;
+            _ = auth_path;
+            return error.Canceled;
+        }
+    };
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .business);
+    try appendAccount(gpa, &reg, secondary_record_key, "user@example.com", "", .business);
+
+    try std.testing.expectError(error.Canceled, main_mod.refreshForegroundUsageForDisplayWithApiFetcher(
+        gpa,
+        codex_home,
+        &reg,
+        TestUsageFetcher.fetch,
+    ));
+}
+
+test "Scenario: Given canceled batch usage fetch when refreshing foreground usage then cancellation propagates" {
+    const gpa = std.testing.allocator;
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex_home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(codex_home);
+
+    const TestBatchFetcher = struct {
+        fn fetch(allocator: std.mem.Allocator, auth_paths: []const []const u8, max_concurrency: usize) ![]usage_api.BatchUsageFetchResult {
+            _ = allocator;
+            _ = auth_paths;
+            _ = max_concurrency;
+            return error.Canceled;
+        }
+    };
+
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .business);
+
+    try std.testing.expectError(error.Canceled, main_mod.refreshForegroundUsageForDisplayWithApiFetchersWithPoolInitUsingApiEnabledAndPersistAndActiveOnly(
+        gpa,
+        codex_home,
+        &reg,
+        usage_api.fetchUsageForAuthPathDetailed,
+        TestBatchFetcher.fetch,
+        main_mod.initForegroundUsagePool,
+        true,
+        false,
+        false,
+        false,
+    ));
+}
+
 test "Scenario: Given API key auth when refreshing foreground usage then overrides stay empty and rows remain placeholder-driven" {
     const gpa = std.testing.allocator;
     var tmp = fs.tmpDir(.{});
@@ -928,13 +1111,13 @@ test "Scenario: Given more than five foreground usage jobs when refreshing usage
     defer reg.deinit(gpa);
 
     inline for (0..7) |idx| {
-        const email = try std.fmt.allocPrint(gpa, "user-{d}@example.com", .{idx});
+        const email = try gpa.print("user-{d}@example.com", .{idx});
         defer gpa.free(email);
-        const user_id = try std.fmt.allocPrint(gpa, "user-{d}", .{idx});
+        const user_id = try gpa.print("user-{d}", .{idx});
         defer gpa.free(user_id);
-        const account_id = try std.fmt.allocPrint(gpa, "account-{d}", .{idx});
+        const account_id = try gpa.print("account-{d}", .{idx});
         defer gpa.free(account_id);
-        const record_key = try std.fmt.allocPrint(gpa, "{s}::{s}", .{ user_id, account_id });
+        const record_key = try gpa.print("{s}::{s}", .{ user_id, account_id });
         defer gpa.free(record_key);
         try appendAccount(gpa, &reg, record_key, email, "", .business);
     }
@@ -1576,4 +1759,135 @@ test "list JSON includes the stored plan expiry timestamp" {
     const accounts = parsed.value.object.get("accounts").?.array.items;
     try std.testing.expectEqual(@as(usize, 1), accounts.len);
     try std.testing.expectEqual(@as(i64, 1_785_326_940), accounts[0].object.get("plan_expires_at").?.integer);
+}
+
+test "list JSON emits null reset_credit when card details are unknown" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .pro);
+    reg.accounts.items[0].last_usage = .{
+        .primary = .{ .used_percent = 12.5, .window_minutes = 300, .resets_at = 1730010000 },
+        .secondary = null,
+        .credits = null,
+        .plan_type = null,
+    };
+    reg.accounts.items[0].last_usage_at = 1730002000;
+
+    const overrides = try gpa.alloc(?[]const u8, 1);
+    const outcomes = try gpa.alloc(main_mod.ForegroundUsageOutcome, 1);
+    overrides[0] = null;
+    outcomes[0] = .{};
+    var state = main_mod.ForegroundUsageRefreshState{
+        .usage_overrides = overrides,
+        .outcomes = outcomes,
+    };
+    defer state.deinit(gpa);
+
+    var result = try main_mod.results.buildListResult(gpa, &reg, &state);
+    defer result.deinit(gpa);
+
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try cli.json_output.writeListResult(&writer, &result);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, writer.buffered(), .{});
+    defer parsed.deinit();
+    const accounts = parsed.value.object.get("accounts").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), accounts.len);
+    const usage = accounts[0].object.get("usage").?.object;
+    try std.testing.expect(usage.get("reset_credit").? == .null);
+}
+
+test "list JSON emits an empty reset_credit array when fetched details are empty" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .pro);
+    reg.accounts.items[0].last_usage = .{
+        .primary = null,
+        .secondary = null,
+        .credits = null,
+        .reset_credits = 0,
+        .reset_credit = try gpa.alloc(registry.ResetCreditCard, 0),
+        .plan_type = null,
+    };
+    reg.accounts.items[0].last_usage_at = 1730002000;
+
+    const overrides = try gpa.alloc(?[]const u8, 1);
+    const outcomes = try gpa.alloc(main_mod.ForegroundUsageOutcome, 1);
+    overrides[0] = null;
+    outcomes[0] = .{};
+    var state = main_mod.ForegroundUsageRefreshState{
+        .usage_overrides = overrides,
+        .outcomes = outcomes,
+    };
+    defer state.deinit(gpa);
+
+    var result = try main_mod.results.buildListResult(gpa, &reg, &state);
+    defer result.deinit(gpa);
+
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try cli.json_output.writeListResult(&writer, &result);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, writer.buffered(), .{});
+    defer parsed.deinit();
+    const accounts = parsed.value.object.get("accounts").?.array.items;
+    const usage = accounts[0].object.get("usage").?.object;
+    try std.testing.expectEqual(@as(usize, 0), usage.get("reset_credit").?.array.items.len);
+}
+
+test "list JSON emits a reset_credit array when card details are stored" {
+    const gpa = std.testing.allocator;
+    var reg = makeRegistry();
+    defer reg.deinit(gpa);
+    try appendAccount(gpa, &reg, primary_record_key, "user@example.com", "", .pro);
+    const cards = try gpa.alloc(registry.ResetCreditCard, 1);
+    cards[0] = .{
+        .id = try gpa.dupe(u8, "credit-1"),
+        .status = try gpa.dupe(u8, "available"),
+        .expires_at = null,
+        .title = null,
+    };
+    reg.accounts.items[0].last_usage = .{
+        .primary = null,
+        .secondary = null,
+        .credits = null,
+        .reset_credits = 1,
+        .reset_credit = cards,
+        .plan_type = null,
+    };
+    reg.accounts.items[0].last_usage_at = 1730002000;
+
+    const overrides = try gpa.alloc(?[]const u8, 1);
+    const outcomes = try gpa.alloc(main_mod.ForegroundUsageOutcome, 1);
+    overrides[0] = null;
+    outcomes[0] = .{};
+    var state = main_mod.ForegroundUsageRefreshState{
+        .usage_overrides = overrides,
+        .outcomes = outcomes,
+    };
+    defer state.deinit(gpa);
+
+    var result = try main_mod.results.buildListResult(gpa, &reg, &state);
+    defer result.deinit(gpa);
+
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try cli.json_output.writeListResult(&writer, &result);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, writer.buffered(), .{});
+    defer parsed.deinit();
+    const accounts = parsed.value.object.get("accounts").?.array.items;
+    const usage = accounts[0].object.get("usage").?.object;
+    const reset_credit = usage.get("reset_credit").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), reset_credit.len);
+    try std.testing.expectEqualStrings("credit-1", reset_credit[0].object.get("id").?.string);
+}
+
+test "Scenario: Given test builds when requesting runtime tier allocators then all route to the checked allocator" {
+    try std.testing.expectEqual(std.testing.allocator.ptr, app_runtime.gpa().ptr);
+    try std.testing.expectEqual(std.testing.allocator.ptr, app_runtime.fastAllocator().ptr);
+    try std.testing.expectEqual(std.testing.allocator.ptr, app_runtime.scratchAllocator().ptr);
 }

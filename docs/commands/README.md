@@ -12,8 +12,10 @@ This directory documents command behavior by command. Use `codex-auth <command> 
 | `export` | [docs/commands/export.md](./export.md) |
 | `switch` | [docs/commands/switch.md](./switch.md) |
 | `remove` | [docs/commands/remove.md](./remove.md) |
+| `reset` | [docs/commands/reset.md](./reset.md) |
 | `alias` | [docs/commands/alias.md](./alias.md) |
 | `clean` | [docs/commands/clean.md](./clean.md) |
+| `completion` | [docs/commands/completion.md](./completion.md) |
 | `config` | [docs/commands/config.md](./config.md) |
 | `app` | [docs/commands/app.md](./app.md) |
 | `poke` / `tickle` / `ping` | [docs/commands/poke.md](./poke.md) *(personal)* |

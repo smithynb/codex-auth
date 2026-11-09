@@ -62,20 +62,6 @@ pub fn codexLoginArgs(opts: types.LoginOptions) []const []const u8 {
         &[_][]const u8{ "codex", "login" };
 }
 
-pub fn resolveWindowsCodexPathEntryAlloc(
-    allocator: std.mem.Allocator,
-    entry: []const u8,
-) !?WindowsCodexPath {
-    var candidates = try collectWindowsCodexPathEntriesAlloc(allocator, &[_][]const u8{entry});
-    errdefer deinitWindowsCodexPathList(allocator, &candidates);
-
-    if (candidates.items.len == 0) return null;
-
-    const resolved = candidates.orderedRemove(0);
-    deinitWindowsCodexPathList(allocator, &candidates);
-    return resolved;
-}
-
 pub fn resolveWindowsCodexPathEntriesAlloc(
     allocator: std.mem.Allocator,
     entries: []const []const u8,
@@ -95,7 +81,7 @@ fn resolvePathEntryCandidateAlloc(
     entry: []const u8,
     candidate_name: []const u8,
 ) !?[]u8 {
-    const candidate = try std.fs.path.join(allocator, &[_][]const u8{ entry, candidate_name });
+    const candidate = try std.Io.Dir.path.join(allocator, &[_][]const u8{ entry, candidate_name });
     errdefer allocator.free(candidate);
 
     if (!accessPath(candidate)) {
@@ -172,7 +158,7 @@ fn collectWindowsCodexPathEntriesAlloc(
 }
 
 fn accessPath(path: []const u8) bool {
-    if (std.fs.path.isAbsolute(path)) {
+    if (std.Io.Dir.path.isAbsolute(path)) {
         std.Io.Dir.accessAbsolute(app_runtime.io(), path, .{}) catch return false;
         return true;
     }
@@ -187,7 +173,7 @@ fn resolveWindowsCodexPathValueAlloc(
     native_candidates: *WindowsCodexPathList,
     ps1_candidates: *WindowsCodexPathList,
 ) !void {
-    var path_it = std.mem.splitScalar(u8, path_value, std.fs.path.delimiter);
+    var path_it = std.mem.splitScalar(u8, path_value, std.Io.Dir.path.delimiter);
     while (path_it.next()) |entry| {
         if (entry.len == 0) continue;
         try appendWindowsCodexPathEntryCandidatesAlloc(allocator, native_candidates, ps1_candidates, entry);
@@ -385,17 +371,17 @@ fn shouldRetryWindowsCodexLaunch(err: std.process.SpawnError, kind: WindowsCodex
 
 fn launchUsesWindowsPowerShellHost(launch: *const CodexLaunch) bool {
     if (launch.argv_len == 0) return false;
-    return std.ascii.eqlIgnoreCase(std.fs.path.basename(launch.argv_storage[0]), "powershell.exe");
+    return std.ascii.eqlIgnoreCase(std.Io.Dir.path.basename(launch.argv_storage[0]), "powershell.exe");
 }
 
 pub fn runCodexLogin(opts: types.LoginOptions, codex_home: []const u8) !void {
-    var env_map = try app_runtime.currentEnviron().createMap(std.heap.page_allocator);
+    var env_map = try app_runtime.getEnvMap(app_runtime.scratchAllocator());
     defer env_map.deinit();
     try env_map.put("CODEX_HOME", codex_home);
 
-    if (builtin.os.tag == .windows) {
-        var candidates = try collectWindowsCodexPathsAlloc(std.heap.page_allocator);
-        defer deinitWindowsCodexPathList(std.heap.page_allocator, &candidates);
+    if (builtin.target.os.tag == .windows) {
+        var candidates = try collectWindowsCodexPathsAlloc(app_runtime.scratchAllocator());
+        defer deinitWindowsCodexPathList(app_runtime.scratchAllocator(), &candidates);
 
         if (candidates.items.len == 0) {
             writeCodexLoginLaunchFailureHint("FileNotFound") catch {};
@@ -405,7 +391,7 @@ pub fn runCodexLogin(opts: types.LoginOptions, codex_home: []const u8) !void {
         var last_retryable_spawn_error: ?std.process.SpawnError = null;
         var last_retryable_build_error: ?RetryableWindowsCodexBuildError = null;
         candidate_loop: for (candidates.items) |*candidate| {
-            var launch = buildWindowsCodexLaunchAlloc(std.heap.page_allocator, candidate, opts) catch |err| {
+            var launch = buildWindowsCodexLaunchAlloc(app_runtime.scratchAllocator(), candidate, opts) catch |err| {
                 if (shouldRetryWindowsCodexBuild(err, candidate.kind)) |retryable_err| {
                     last_retryable_build_error = retryable_err;
                     continue :candidate_loop;
@@ -425,9 +411,9 @@ pub fn runCodexLogin(opts: types.LoginOptions, codex_home: []const u8) !void {
                     }) catch |err| {
                         if (candidate.kind == .ps1 and launchUsesWindowsPowerShellHost(&launch) and err == error.AccessDenied) {
                             last_retryable_spawn_error = err;
-                            launch.deinit(std.heap.page_allocator);
+                            launch.deinit(app_runtime.scratchAllocator());
                             launch = buildWindowsPowerShellCodexLaunchAlloc(
-                                std.heap.page_allocator,
+                                app_runtime.scratchAllocator(),
                                 candidate.path,
                                 opts,
                                 .pwsh,
@@ -442,7 +428,7 @@ pub fn runCodexLogin(opts: types.LoginOptions, codex_home: []const u8) !void {
                             continue :spawn_attempt;
                         }
 
-                        launch.deinit(std.heap.page_allocator);
+                        launch.deinit(app_runtime.scratchAllocator());
                         if (shouldRetryWindowsCodexLaunch(err, candidate.kind)) {
                             last_retryable_spawn_error = err;
                             continue :candidate_loop;
@@ -452,7 +438,7 @@ pub fn runCodexLogin(opts: types.LoginOptions, codex_home: []const u8) !void {
                     };
                 }
             };
-            launch.deinit(std.heap.page_allocator);
+            launch.deinit(app_runtime.scratchAllocator());
 
             const term = child.wait(app_runtime.io()) catch |err| {
                 writeCodexLoginLaunchFailureHint(@errorName(err)) catch {};
@@ -469,11 +455,11 @@ pub fn runCodexLogin(opts: types.LoginOptions, codex_home: []const u8) !void {
         return failure.err;
     }
 
-    var launch = buildCodexLaunchAlloc(std.heap.page_allocator, opts) catch |err| {
+    var launch = buildCodexLaunchAlloc(app_runtime.scratchAllocator(), opts) catch |err| {
         writeCodexLoginLaunchFailureHint(@errorName(err)) catch {};
         return err;
     };
-    defer launch.deinit(std.heap.page_allocator);
+    defer launch.deinit(app_runtime.scratchAllocator());
 
     var child = std.process.spawn(app_runtime.io(), .{
         .argv = launch.argv(),

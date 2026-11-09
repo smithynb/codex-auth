@@ -35,6 +35,7 @@ jobs:
     needs: classify
     if: ${{ needs.classify.outputs.skip_release != 'true' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -47,19 +48,24 @@ jobs:
       - name: Setup Zig
         uses: Loongphy/setup-zig@node24-lts-runtime
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Zig test
-        if: ${{ matrix.os != 'windows-latest' }}
         run: |
           zig version
           zig build test
 
-      - name: Zig test (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
+      # Debug codegen hides libc-ABI hazards that trip the stack protector
+      # under release codegen (e.g. the glibc termios overflow), so point the
+      # pty harness at a ReleaseSafe CLI — it skips its own debug rebuild via
+      # the install-prefix override.
+      - name: ReleaseSafe e2e (pty)
+        if: ${{ matrix.os == 'ubuntu-latest' }}
         run: |
-          zig version
-          zig build test -j1
+          zig build -p zig-out-rs -Doptimize=ReleaseSafe
+          # `pty` would substring-match "empty" tests in cli_integration_test,
+          # which rebuild a Debug child into the staged prefix.
+          zig build test -Dtest-filter=pty: -Dcli-prefix="${{ github.workspace }}/zig-out-rs"
 
       - name: Setup Node for launcher tests
         if: ${{ matrix.os == 'ubuntu-latest' }}
@@ -73,6 +79,5 @@ jobs:
         run: |
           zig build
           node --test tests/personal_poke_test.mjs
-          python3 tests/personal_restart_test.py
           python3 tests/personal_help_test.py
           python3 tests/list_terminal_test.py

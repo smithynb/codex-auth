@@ -45,6 +45,7 @@ pub fn buildDisplayRows(
 
     var row_list = std.ArrayList(DisplayRow).empty;
     defer row_list.deinit(allocator);
+    // Registered after the list's defer so it runs first and the items are still valid.
     errdefer for (row_list.items) |*row| row.deinit(allocator);
     var selectable = std.ArrayList(usize).empty;
     defer selectable.deinit(allocator);
@@ -55,41 +56,30 @@ pub fn buildDisplayRows(
         const email = reg.accounts.items[ordered[i]].email;
         while (i < ordered.len and std.mem.eql(u8, reg.accounts.items[ordered[i]].email, email)) : (i += 1) {}
         const group_indices = ordered[group_start..i];
+        // A singleton is a group of one: the same label resolution applies,
+        // only the email placement differs — a group header row carries it,
+        // a singleton row carries it in its own cell.
+        const grouped = group_indices.len > 1;
 
-        if (group_indices.len == 1) {
-            const account_idx = group_indices[0];
-            const rec = &reg.accounts.items[account_idx];
-            const cell = try singletonAccountCellAlloc(allocator, rec);
+        if (grouped) {
+            const header_cell = try redactEmailAlloc(allocator, email);
             row_list.append(allocator, .{
-                .account_index = account_idx,
-                .account_cell = cell,
+                .account_index = null,
+                .account_cell = header_cell,
                 .depth = 0,
-                .is_active = isActive(reg, account_idx),
+                .is_active = false,
             }) catch |err| {
-                allocator.free(cell);
+                allocator.free(header_cell);
                 return err;
             };
-            try selectable.append(allocator, row_list.items.len - 1);
-            continue;
         }
 
-        const header_cell = try redactEmailAlloc(allocator, email);
-        row_list.append(allocator, .{
-            .account_index = null,
-            .account_cell = header_cell,
-            .depth = 0,
-            .is_active = false,
-        }) catch |err| {
-            allocator.free(header_cell);
-            return err;
-        };
-
         for (group_indices) |account_idx| {
-            const cell = try groupedAccountCellAlloc(allocator, reg, group_indices, account_idx);
+            const cell = try accountCellAlloc(allocator, reg, group_indices, account_idx);
             row_list.append(allocator, .{
                 .account_index = account_idx,
                 .account_cell = cell,
-                .depth = 1,
+                .depth = if (grouped) 1 else 0,
                 .is_active = isActive(reg, account_idx),
             }) catch |err| {
                 allocator.free(cell);
@@ -123,31 +113,40 @@ fn lessThanByDisplayOrder(ctx: SortContext, lhs: usize, rhs: usize) bool {
     const email_cmp = std.mem.order(u8, a.email, b.email);
     if (email_cmp != .eq) return email_cmp == .lt;
 
-    const a_active = isActive(reg, lhs);
-    const b_active = isActive(reg, rhs);
-    if (a_active != b_active) return a_active;
-
-    const a_rank = planSortRank(registry.resolveDisplayPlan(a));
-    const b_rank = planSortRank(registry.resolveDisplayPlan(b));
-    if (a_rank != b_rank) return a_rank < b_rank;
-
-    const a_plan = displayPlan(a);
-    const b_plan = displayPlan(b);
-    const plan_cmp = std.mem.order(u8, a_plan, b_plan);
-    if (plan_cmp != .eq) return plan_cmp == .lt;
+    // Within one email group, rows order alphabetically by the label they
+    // display, so the order the user reads is the order the user sees.
+    // account_key keeps it stable (and matches the "#N" fallback ordinals).
+    var a_buf: [apikey_label_len]u8 = undefined;
+    var b_buf: [apikey_label_len]u8 = undefined;
+    const label_cmp = std.mem.order(u8, groupSortLabel(a, &a_buf), groupSortLabel(b, &b_buf));
+    if (label_cmp != .eq) return label_cmp == .lt;
 
     return std.mem.lessThan(u8, a.account_key, b.account_key);
 }
 
-fn planSortRank(plan: ?registry.PlanType) u8 {
-    return switch (plan orelse .unknown) {
-        .business, .enterprise, .edu => 0,
-        .free, .go, .plus, .prolite, .pro => 1,
-        else => 2,
-    };
+/// "sk-" + 5 fingerprint chars + "***" + 4 fingerprint chars.
+const apikey_label_len = 15;
+
+/// The label a grouped row displays, as a sort key: alias, else the apikey
+/// fingerprint (grouped apikey rows show it ahead of the account name), else
+/// account name, else the plan fallback that groupFallbackLabelAlloc produces.
+/// `buf` backs the formatted fingerprint label so sorting stays
+/// allocation-free; the returned slice borrows either `buf` or the record.
+fn groupSortLabel(rec: *const registry.AccountRecord, buf: *[apikey_label_len]u8) []const u8 {
+    if (rec.alias.len != 0) return rec.alias;
+    if (rec.auth_mode != null and rec.auth_mode.? == .apikey) {
+        if (apiKeyFingerprintSlice(rec.account_key)) |fingerprint| {
+            return std.fmt.bufPrint(buf, "sk-{s}***{s}", .{
+                fingerprint[0..5],
+                fingerprint[fingerprint.len - 4 ..],
+            }) catch displayPlan(rec);
+        }
+    }
+    if (normalizedAccountName(rec)) |name| return name;
+    return displayPlan(rec);
 }
 
-fn displayPlan(rec: *const registry.AccountRecord) []const u8 {
+pub fn displayPlan(rec: *const registry.AccountRecord) []const u8 {
     if (rec.auth_mode != null and rec.auth_mode.? == .apikey) return "API_KEY";
     return if (registry.resolveDisplayPlan(rec)) |plan| registry.planLabel(plan) else "-";
 }
@@ -157,11 +156,91 @@ fn isActive(reg: *const registry.Registry, account_idx: usize) bool {
     return std.mem.eql(u8, active, reg.accounts.items[account_idx].account_key);
 }
 
-fn singletonAccountCellAlloc(allocator: std.mem.Allocator, rec: *const registry.AccountRecord) ![]u8 {
-    return buildAccountIdentityLabelAlloc(allocator, rec);
+/// One precedence chain for what identifies an account row: alias, then
+/// account name, then — only inside a group, where the header row already
+/// shows the email — the masked apikey fingerprint. The two cell shapes are
+/// thin formatters over this shared resolution.
+const AccountLabel = struct {
+    alias: ?[]const u8,
+    account_name: ?[]const u8,
+    fingerprint: ?[]u8,
+
+    fn deinit(self: AccountLabel, allocator: std.mem.Allocator) void {
+        if (self.fingerprint) |value| allocator.free(value);
+    }
+};
+
+fn resolveAccountLabel(allocator: std.mem.Allocator, rec: *const registry.AccountRecord, grouped: bool) !AccountLabel {
+    return .{
+        .alias = if (rec.alias.len != 0) rec.alias else null,
+        .account_name = normalizedAccountName(rec),
+        .fingerprint = if (grouped and rec.auth_mode != null and rec.auth_mode.? == .apikey)
+            try apiKeyLabelFromAccountKeyAlloc(allocator, rec.account_key)
+        else
+            null,
+    };
 }
 
-fn groupedAccountCellAlloc(
+/// The cell for one account row in a group of `group_indices` (a singleton
+/// is a group of one). Label resolution is shared; only the email placement
+/// differs — a grouped child leaves the email to the header row, a singleton
+/// carries it in its own cell via buildAccountIdentityLabelAlloc.
+fn accountCellAlloc(
+    allocator: std.mem.Allocator,
+    reg: *const registry.Registry,
+    group_indices: []const usize,
+    account_idx: usize,
+) ![]u8 {
+    const rec = &reg.accounts.items[account_idx];
+    if (group_indices.len == 1) return buildAccountIdentityLabelAlloc(allocator, rec);
+
+    if (rec.alias.len == 0 and normalizedAccountName(rec) == null and
+        !(rec.auth_mode != null and rec.auth_mode.? == .apikey and apiKeyFingerprintSlice(rec.account_key) != null))
+    {
+        return groupFallbackLabelAlloc(allocator, reg, group_indices, account_idx);
+    }
+    return buildPreferredAccountLabelAlloc(allocator, rec, displayPlan(rec));
+}
+
+/// The grouped-row label with email-shaped text masked: alias, then the
+/// apikey fingerprint or account name, else `fallback`.
+pub fn buildPreferredAccountLabelAlloc(
+    allocator: std.mem.Allocator,
+    rec: *const registry.AccountRecord,
+    fallback: []const u8,
+) ![]u8 {
+    const label = try resolveAccountLabel(allocator, rec, true);
+    defer label.deinit(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    if (label.alias == null and label.fingerprint == null and label.account_name == null) {
+        redact.writeRedactedText(&out.writer, fallback) catch return error.OutOfMemory;
+    } else {
+        writeGroupedLabel(&out.writer, label) catch return error.OutOfMemory;
+    }
+    return out.toOwnedSlice();
+}
+
+fn writeGroupedLabel(out: *std.Io.Writer, label: AccountLabel) !void {
+    if (label.alias) |alias| {
+        try redact.writeRedactedText(out, alias);
+        if (label.fingerprint) |fingerprint| {
+            try out.print("({s})", .{fingerprint});
+        } else if (label.account_name) |name| {
+            try out.writeAll("(");
+            try redact.writeRedactedText(out, name);
+            try out.writeAll(")");
+        }
+        return;
+    }
+    if (label.fingerprint) |fingerprint| return out.writeAll(fingerprint);
+    if (label.account_name) |name| try redact.writeRedactedText(out, name);
+}
+
+/// The label for a grouped row whose account has neither alias nor account
+/// name: the plan, disambiguated with a 1-based ordinal when several
+/// alias-less accounts of the same plan share the email.
+fn groupFallbackLabelAlloc(
     allocator: std.mem.Allocator,
     reg: *const registry.Registry,
     group_indices: []const usize,
@@ -169,9 +248,6 @@ fn groupedAccountCellAlloc(
 ) ![]u8 {
     const rec = &reg.accounts.items[account_idx];
     const base = displayPlan(rec);
-    if (rec.alias.len != 0 or normalizedAccountName(rec) != null) {
-        return buildPreferredAccountLabelAlloc(allocator, rec, base);
-    }
     var total_same: usize = 0;
     var ordinal: usize = 1;
     for (group_indices) |candidate_idx| {
@@ -184,86 +260,36 @@ fn groupedAccountCellAlloc(
             ordinal += 1;
         }
     }
-
-    const fallback = if (total_same <= 1)
-        try allocator.dupe(u8, base)
-    else
-        try std.fmt.allocPrint(allocator, "{s} #{d}", .{ base, ordinal });
-    defer allocator.free(fallback);
-
-    return buildPreferredAccountLabelAlloc(allocator, rec, fallback);
+    if (total_same <= 1) return allocator.dupe(u8, base);
+    return allocator.print("{s} #{d}", .{ base, ordinal });
 }
 
-pub fn buildPreferredAccountLabelAlloc(
-    allocator: std.mem.Allocator,
-    rec: *const registry.AccountRecord,
-    fallback: []const u8,
-) ![]u8 {
-    const api_key_label = if (rec.auth_mode != null and rec.auth_mode.? == .apikey)
-        try apiKeyLabelFromAccountKeyAlloc(allocator, rec.account_key)
-    else
-        null;
-    defer if (api_key_label) |value| allocator.free(value);
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    errdefer out.deinit();
-    writePreferredAccountLabel(&out.writer, rec, api_key_label, fallback) catch return error.OutOfMemory;
-    return out.toOwnedSlice();
-}
-
-fn writePreferredAccountLabel(
-    out: *std.Io.Writer,
-    rec: *const registry.AccountRecord,
-    api_key_label: ?[]const u8,
-    fallback: []const u8,
-) !void {
-    const alias = if (rec.alias.len != 0) rec.alias else null;
-    const account_name = normalizedAccountName(rec);
-
-    if (rec.auth_mode != null and rec.auth_mode.? == .apikey) {
-        if (alias) |value| {
-            try redact.writeRedactedText(out, value);
-            if (api_key_label) |label| try out.print("({s})", .{label});
-        } else if (api_key_label) |label| {
-            try out.writeAll(label);
-        } else {
-            try redact.writeRedactedText(out, account_name orelse fallback);
-        }
-        return;
-    }
-    if (alias) |value| try redact.writeRedactedText(out, value);
-    if (account_name) |name| {
-        if (alias != null) try out.writeAll("(");
-        try redact.writeRedactedText(out, name);
-        if (alias != null) try out.writeAll(")");
-    }
-    if (alias == null and account_name == null) try redact.writeRedactedText(out, fallback);
-}
-
+/// Singleton shape over the shared label resolution: the row must carry the
+/// email itself (no group header shows it), and never the apikey fingerprint.
 pub fn buildAccountIdentityLabelAlloc(
     allocator: std.mem.Allocator,
     rec: *const registry.AccountRecord,
 ) ![]u8 {
-    const email = try redactEmailAlloc(allocator, rec.email);
-    defer allocator.free(email);
+    const label = try resolveAccountLabel(allocator, rec, false);
+    defer label.deinit(allocator);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
-    writeAccountIdentityLabel(&out.writer, rec, email) catch return error.OutOfMemory;
+    writeIdentityLabel(&out.writer, label, rec.email) catch return error.OutOfMemory;
     return out.toOwnedSlice();
 }
 
-fn writeAccountIdentityLabel(out: *std.Io.Writer, rec: *const registry.AccountRecord, email: []const u8) !void {
-    const alias = if (rec.alias.len != 0) rec.alias else null;
-    const account_name = normalizedAccountName(rec);
-    if (alias) |value| try redact.writeRedactedText(out, value);
-    if (account_name) |name| {
-        if (alias != null) try out.writeAll("(");
+fn writeIdentityLabel(out: *std.Io.Writer, label: AccountLabel, email: []const u8) !void {
+    if (label.alias) |alias| try redact.writeRedactedText(out, alias);
+    if (label.account_name) |name| {
+        if (label.alias != null) try out.writeAll("(");
         try redact.writeRedactedText(out, name);
     }
-    if (alias != null or account_name != null) {
-        try out.writeAll(if (alias != null and account_name != null) ", " else "(");
-        try out.print("{s})", .{email});
+    if (label.alias != null or label.account_name != null) {
+        try out.writeAll(if (label.alias != null and label.account_name != null) ", " else "(");
+        try redact.writeRedactedEmail(out, email);
+        try out.writeAll(")");
     } else {
-        try out.writeAll(email);
+        try redact.writeRedactedEmail(out, email);
     }
 }
 
@@ -273,12 +299,19 @@ fn normalizedAccountName(rec: *const registry.AccountRecord) ?[]const u8 {
     return account_name;
 }
 
-fn apiKeyLabelFromAccountKeyAlloc(allocator: std.mem.Allocator, account_key: []const u8) !?[]u8 {
+/// The raw fingerprint an apikey account_key carries (`apikey::<…>::<fp>`);
+/// shared by the displayed `sk-…***…` label and the group sort key.
+fn apiKeyFingerprintSlice(account_key: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, account_key, "apikey::")) return null;
-    const sep = std.mem.lastIndexOf(u8, account_key, "::") orelse return null;
+    const sep = std.mem.findLast(u8, account_key, "::") orelse return null;
     const fingerprint = account_key[sep + 2 ..];
     if (fingerprint.len < 9) return null;
-    const label = try std.fmt.allocPrint(allocator, "sk-{s}***{s}", .{
+    return fingerprint;
+}
+
+fn apiKeyLabelFromAccountKeyAlloc(allocator: std.mem.Allocator, account_key: []const u8) !?[]u8 {
+    const fingerprint = apiKeyFingerprintSlice(account_key) orelse return null;
+    const label = try allocator.print("sk-{s}***{s}", .{
         fingerprint[0..5],
         fingerprint[fingerprint.len - 4 ..],
     });

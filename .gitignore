@@ -12,3 +12,6 @@ benchmark/*
 
 # Node modules for personal launcher
 node_modules/
+
+# Local release notes drafts (referenced via git tag -F)
+release-notes/

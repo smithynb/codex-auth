@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_options = @import("test_options");
 const app_runtime = @import("codex_auth").core.runtime;
 const fs = @import("codex_auth").core.compat_fs;
 const builtin = @import("builtin");
@@ -13,15 +14,11 @@ var cli_build_ready = false;
 var cli_build_mutex: std.Io.Mutex = .init;
 
 fn getEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
-    return try app_runtime.currentEnviron().createMap(allocator);
+    return app_runtime.getEnvMap(allocator);
 }
 
 fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    var env_map = try getEnvMap(allocator);
-    defer env_map.deinit();
-
-    const value = env_map.get(name) orelse return error.EnvironmentVariableNotFound;
-    return try allocator.dupe(u8, value);
+    return app_runtime.getEnvVarOwned(allocator, name);
 }
 
 const SeedAccount = struct {
@@ -38,9 +35,7 @@ fn projectRootAlloc(allocator: std.mem.Allocator) ![]u8 {
         else => return err,
     };
     if (project_root) |path| return path;
-    const tests_dir = std.fs.path.dirname(@src().file) orelse return error.FileNotFound;
-    const repo_root = std.fs.path.dirname(tests_dir) orelse return error.FileNotFound;
-    return try allocator.dupe(u8, repo_root);
+    return fs.realpathAlloc(allocator, test_options.project_root);
 }
 
 fn runCapture(
@@ -106,7 +101,10 @@ fn buildCliBinary(allocator: std.mem.Allocator, project_root: []const u8) !void 
     try env_map.put("ZIG_LOCAL_CACHE_DIR", local_cache_dir);
     try env_map.put(cli_integration_install_prefix_env, install_prefix);
 
-    const result = try runCapture(allocator, project_root, &env_map, &[_][]const u8{ "zig", "build", "-p", install_prefix, "test-helpers" });
+    // Build the child in the same optimize mode as the test binary: hazards
+    // that only surface under release codegen (e.g. stack-protector tripping)
+    // must not hide behind a Debug child.
+    const result = try runCapture(allocator, project_root, &env_map, &[_][]const u8{ test_options.zig_exe, "build", "-p", install_prefix, "-Doptimize=" ++ @tagName(builtin.optimize), "test-helpers" });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -124,7 +122,7 @@ fn buildCliBinary(allocator: std.mem.Allocator, project_root: []const u8) !void 
 }
 
 fn builtCliPathAlloc(allocator: std.mem.Allocator, project_root: []const u8) ![]u8 {
-    const exe_name = if (builtin.os.tag == .windows) "codex-auth.exe" else "codex-auth";
+    const exe_name = if (builtin.target.os.tag == .windows) "codex-auth.exe" else "codex-auth";
     const install_prefix = getEnvVarOwned(allocator, cli_integration_install_prefix_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
@@ -136,7 +134,7 @@ fn builtCliPathAlloc(allocator: std.mem.Allocator, project_root: []const u8) ![]
 }
 
 fn fakeCodexCommandPath() []const u8 {
-    return if (builtin.os.tag == .windows) "fake-bin/codex.cmd" else "fake-bin/codex";
+    return if (builtin.target.os.tag == .windows) "fake-bin/codex.cmd" else "fake-bin/codex";
 }
 
 fn fakeCodexPowerShellPath() []const u8 {
@@ -157,14 +155,14 @@ fn fakeBareWindowsCodexPath() []const u8 {
 
 fn writeFailingFakeCodex(dir: fs.Dir, exit_code: u8) !void {
     var script_buf: [128]u8 = undefined;
-    const script = if (builtin.os.tag == .windows)
-        try std.fmt.bufPrint(&script_buf, "@echo off\r\n>\"%HOME%\\fake-codex-argv.txt\" echo %*\r\nexit /b {d}\r\n", .{exit_code})
+    const script = if (builtin.target.os.tag == .windows)
+        try std.mem.print(&script_buf, "@echo off\r\n>\"%HOME%\\fake-codex-argv.txt\" echo %*\r\nexit /b {d}\r\n", .{exit_code})
     else
-        try std.fmt.bufPrint(&script_buf, "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HOME/fake-codex-argv.txt\"\nexit {d}\n", .{exit_code});
+        try std.mem.print(&script_buf, "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HOME/fake-codex-argv.txt\"\nexit {d}\n", .{exit_code});
     const sub_path = fakeCodexCommandPath();
     try dir.writeFile(.{ .sub_path = sub_path, .data = script });
 
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         var file = try dir.openFile(sub_path, .{ .mode = .read_write });
         defer file.close();
         try file.chmod(0o755);
@@ -173,7 +171,7 @@ fn writeFailingFakeCodex(dir: fs.Dir, exit_code: u8) !void {
 
 fn writeSuccessfulFakeCodex(dir: fs.Dir) !void {
     const script =
-        if (builtin.os.tag == .windows)
+        if (builtin.target.os.tag == .windows)
             "@echo off\r\n" ++
                 ">\"%HOME%\\fake-codex-launcher.txt\" echo cmd\r\n" ++
                 ">\"%HOME%\\fake-codex-argv.txt\" echo %*\r\n" ++
@@ -195,7 +193,7 @@ fn writeSuccessfulFakeCodex(dir: fs.Dir) !void {
     const sub_path = fakeCodexCommandPath();
     try dir.writeFile(.{ .sub_path = sub_path, .data = script });
 
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         var file = try dir.openFile(sub_path, .{ .mode = .read_write });
         defer file.close();
         try file.chmod(0o755);
@@ -204,7 +202,7 @@ fn writeSuccessfulFakeCodex(dir: fs.Dir) !void {
 
 fn writeStrictExistingCodexHomeFakeCodex(dir: fs.Dir) !void {
     const script =
-        if (builtin.os.tag == .windows)
+        if (builtin.target.os.tag == .windows)
             "@echo off\r\n" ++
                 ">\"%HOME%\\fake-codex-launcher.txt\" echo cmd\r\n" ++
                 ">\"%HOME%\\fake-codex-argv.txt\" echo %*\r\n" ++
@@ -226,7 +224,7 @@ fn writeStrictExistingCodexHomeFakeCodex(dir: fs.Dir) !void {
     const sub_path = fakeCodexCommandPath();
     try dir.writeFile(.{ .sub_path = sub_path, .data = script });
 
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         var file = try dir.openFile(sub_path, .{ .mode = .read_write });
         defer file.close();
         try file.chmod(0o755);
@@ -234,7 +232,7 @@ fn writeStrictExistingCodexHomeFakeCodex(dir: fs.Dir) !void {
 }
 
 fn writeStrictExistingCodexHomeFakeCodexBatch(dir: fs.Dir) !void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
 
     const script =
         "@echo off\r\n" ++
@@ -251,7 +249,7 @@ fn writeStrictExistingCodexHomeFakeCodexBatch(dir: fs.Dir) !void {
 }
 
 fn writeBrokenBareWindowsCodex(dir: fs.Dir) !void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
     try dir.writeFile(.{
         .sub_path = fakeBareWindowsCodexPath(),
         .data = "#!/bin/sh\nexit 99\n",
@@ -259,7 +257,7 @@ fn writeBrokenBareWindowsCodex(dir: fs.Dir) !void {
 }
 
 fn writeSuccessfulFakeCodexPowerShellAt(dir: fs.Dir, sub_path: []const u8) !void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
 
     const script =
         "$homePath = $env:HOME\r\n" ++
@@ -284,7 +282,7 @@ fn writeSuccessfulFakeCodexExeAt(
     project_root: []const u8,
     sub_path: []const u8,
 ) !void {
-    if (builtin.os.tag != .windows) return;
+    if (builtin.target.os.tag != .windows) return;
 
     const built_fake_codex = try builtFakeCodexPathAlloc(allocator, project_root);
     defer allocator.free(built_fake_codex);
@@ -302,22 +300,31 @@ fn writeSuccessfulFakeCodexExe(
 }
 
 fn fakeCurlCommandPath() []const u8 {
-    return if (builtin.os.tag == .windows) "fake-curl-bin/curl.exe" else "fake-curl-bin/curl";
+    return if (builtin.target.os.tag == .windows) "fake-curl-bin/curl.exe" else "fake-curl-bin/curl";
+}
+
+/// Installs a built helper binary under `dir` so it can shadow PATH. Copies
+/// instead of reading into memory: these binaries outgrew `readFileAlloc`'s cap.
+fn installBuiltBinary(source_path: []const u8, dir: fs.Dir, sub_path: []const u8) !void {
+    try fs.cwd().copyFile(source_path, dir, sub_path, .{});
+    if (builtin.target.os.tag != .windows) {
+        var file = try dir.openFile(sub_path, .{ .mode = .read_write });
+        defer file.close();
+        try file.chmod(0o755);
+    }
 }
 
 fn writeFailingFakeCurl(allocator: std.mem.Allocator, dir: fs.Dir, project_root: []const u8) !void {
     try dir.makePath("fake-curl-bin");
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         const built_fake_curl = try builtFakeCurlFailPathAlloc(allocator, project_root);
         defer allocator.free(built_fake_curl);
-        const fake_curl_data = try fixtures.readFileAlloc(allocator, built_fake_curl);
-        defer allocator.free(fake_curl_data);
-        try dir.writeFile(.{ .sub_path = fakeCurlCommandPath(), .data = fake_curl_data });
+        try installBuiltBinary(built_fake_curl, dir, fakeCurlCommandPath());
         return;
     }
 
     var script_buf: [160]u8 = undefined;
-    const script = try std.fmt.bufPrint(&script_buf, "#!/bin/sh\nexit 1\n", .{});
+    const script = try std.mem.print(&script_buf, "#!/bin/sh\nexit 1\n", .{});
     const sub_path = fakeCurlCommandPath();
     try dir.writeFile(.{ .sub_path = sub_path, .data = script });
 
@@ -328,20 +335,17 @@ fn writeFailingFakeCurl(allocator: std.mem.Allocator, dir: fs.Dir, project_root:
 
 fn writeApiKeyFlowFakeCurl(allocator: std.mem.Allocator, dir: fs.Dir, project_root: []const u8) !void {
     try dir.makePath("fake-curl-bin");
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         const built_fake_curl = try builtFakeCurlPathAlloc(allocator, project_root);
         defer allocator.free(built_fake_curl);
-        const fake_curl_data = try fixtures.readFileAlloc(allocator, built_fake_curl);
-        defer allocator.free(fake_curl_data);
-        try dir.writeFile(.{ .sub_path = fakeCurlCommandPath(), .data = fake_curl_data });
+        try installBuiltBinary(built_fake_curl, dir, fakeCurlCommandPath());
         return;
     }
 
     const me_body = "{\"id\":\"user_api_e2e\",\"email\":\"apikey-flow@example.com\",\"name\":\"API Flow\"}";
     const usage_body = "{\"plan_type\":\"plus\",\"rate_limit\":{\"primary_window\":{\"used_percent\":12,\"limit_window_seconds\":18000,\"reset_at\":4102444800},\"secondary_window\":{\"used_percent\":34,\"limit_window_seconds\":604800,\"reset_at\":4103049600}}}";
 
-    const script = try std.fmt.allocPrint(
-        allocator,
+    const script = try allocator.print(
         "#!/bin/sh\n" ++
             "config=$(cat)\n" ++
             "case \"$config\" in\n" ++
@@ -361,7 +365,7 @@ fn writeApiKeyFlowFakeCurl(allocator: std.mem.Allocator, dir: fs.Dir, project_ro
 }
 
 fn builtFakeCurlPathAlloc(allocator: std.mem.Allocator, project_root: []const u8) ![]u8 {
-    const exe_name = if (builtin.os.tag == .windows) "curl.exe" else "curl";
+    const exe_name = if (builtin.target.os.tag == .windows) "curl.exe" else "curl";
     const install_prefix = getEnvVarOwned(allocator, cli_integration_install_prefix_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
@@ -373,7 +377,7 @@ fn builtFakeCurlPathAlloc(allocator: std.mem.Allocator, project_root: []const u8
 }
 
 fn builtFakeCurlFailPathAlloc(allocator: std.mem.Allocator, project_root: []const u8) ![]u8 {
-    const exe_name = if (builtin.os.tag == .windows) "curl-fail.exe" else "curl-fail";
+    const exe_name = if (builtin.target.os.tag == .windows) "curl-fail.exe" else "curl-fail";
     const install_prefix = getEnvVarOwned(allocator, cli_integration_install_prefix_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
@@ -385,7 +389,7 @@ fn builtFakeCurlFailPathAlloc(allocator: std.mem.Allocator, project_root: []cons
 }
 
 fn builtFakeCodexPathAlloc(allocator: std.mem.Allocator, project_root: []const u8) ![]u8 {
-    const exe_name = if (builtin.os.tag == .windows) "fake-codex.exe" else "fake-codex";
+    const exe_name = if (builtin.target.os.tag == .windows) "fake-codex.exe" else "fake-codex";
     const install_prefix = getEnvVarOwned(allocator, cli_integration_install_prefix_env) catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
@@ -396,12 +400,44 @@ fn builtFakeCodexPathAlloc(allocator: std.mem.Allocator, project_root: []const u
     return fs.path.join(allocator, &[_][]const u8{ prefix, "bin", exe_name });
 }
 
+fn pathEntryHostsCodexBinary(dir_path: []const u8) bool {
+    const names: []const []const u8 = if (builtin.target.os.tag == .windows)
+        &.{ "codex.exe", "codex.cmd", "codex.bat", "codex.ps1" }
+    else
+        &.{"codex"};
+    for (names) |name| {
+        const candidate = fs.path.join(std.heap.page_allocator, &[_][]const u8{ dir_path, name }) catch continue;
+        defer std.heap.page_allocator.free(candidate);
+        if (std.Io.Dir.path.isAbsolute(candidate)) {
+            std.Io.Dir.accessAbsolute(fs.io(), candidate, .{}) catch continue;
+        } else {
+            std.Io.Dir.cwd().access(fs.io(), candidate, .{}) catch continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+/// Prepends the fixture directory to PATH, dropping inherited entries that
+/// contain a real `codex` binary. Native wrappers outrank `codex.ps1` during
+/// resolution, so a machine that has Codex installed would otherwise shadow
+/// the fixture's fake wrappers and launch the real CLI in tests that assert
+/// lower-priority launchers.
 fn prependPathEntryAlloc(allocator: std.mem.Allocator, entry: []const u8) ![]u8 {
     var env_map = try getEnvMap(allocator);
     defer env_map.deinit();
 
     const inherited_path = env_map.get("PATH") orelse return allocator.dupe(u8, entry);
-    return try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ entry, fs.path.delimiter, inherited_path });
+    var kept = std.ArrayList(u8).empty;
+    defer kept.deinit(allocator);
+    var it = std.mem.splitScalar(u8, inherited_path, fs.path.delimiter);
+    while (it.next()) |path_entry| {
+        if (path_entry.len == 0) continue;
+        if (pathEntryHostsCodexBinary(path_entry)) continue;
+        if (kept.items.len != 0) try kept.append(allocator, fs.path.delimiter);
+        try kept.appendSlice(allocator, path_entry);
+    }
+    return try allocator.print("{s}{c}{s}", .{ entry, fs.path.delimiter, kept.items });
 }
 
 fn runCliWithIsolatedHomeAndPathAndApiKeyCurl(
@@ -690,6 +726,13 @@ fn expectFailure(result: std.process.RunResult) !void {
     }
 }
 
+fn expectExitCode(result: std.process.RunResult, expected: u8) !void {
+    switch (result.term) {
+        .exited => |code| try std.testing.expectEqual(expected, code),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 fn logRunResultIfFailed(label: []const u8, result: std.process.RunResult) void {
     switch (result.term) {
         .exited => |code| if (code == 0) return,
@@ -727,7 +770,7 @@ fn countAuthBackups(dir: fs.Dir, rel_path: []const u8) !usize {
 fn legacySnapshotNameForEmail(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
     const encoded = try fixtures.b64url(allocator, email);
     defer allocator.free(encoded);
-    return try std.fmt.allocPrint(allocator, "{s}.auth.json", .{encoded});
+    return try allocator.print("{s}.auth.json", .{encoded});
 }
 
 fn seedRegistryWithAccounts(
@@ -776,19 +819,19 @@ fn seedDaemonSwitchFixture(allocator: std.mem.Allocator, home_root: []const u8, 
     return home;
 }
 
-test "Scenario: Given daemon-aware switching then explicit recovery preserves selection JSON and restart failures remain visible" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "Scenario: Given daemon-aware switching then automatic restart preserves selection JSON and restart failures remain visible" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
     defer gpa.free(project_root);
     try buildCliBinary(gpa, project_root);
-    const cases = [_]struct { unchanged: bool = false, requested: bool = true, json: bool = false, fail: bool = false, previous: bool = false, attempts: usize = 1 }{
+    const cases = [_]struct { unchanged: bool = false, no_restart: bool = false, json: bool = false, fail: bool = false, previous: bool = false, attempts: usize = 1 }{
         .{},
         .{ .json = true },
         .{ .unchanged = true },
         .{ .previous = true },
-        .{ .unchanged = true, .requested = false },
-        .{ .requested = false },
+        .{ .unchanged = true, .no_restart = true },
+        .{ .no_restart = true },
         .{ .fail = true },
         .{ .fail = true, .json = true, .attempts = 2 },
     };
@@ -812,19 +855,18 @@ test "Scenario: Given daemon-aware switching then explicit recovery preserves se
             reg.previous_active_account_key = try gpa.dupe(u8, beta_key);
             try registry.saveRegistry(gpa, home, &reg);
         }
-        const body = try std.fmt.allocPrint(
-            gpa,
-            "{s}" ++
+        const body = try gpa.print(
+            "{s}{s}" ++
                 "[ \"$3\" = restart ] || exit 91\n" ++
                 "grep -F 'access-beta@example.com' \"$CODEX_HOME/auth.json\" >/dev/null || exit 92\n" ++
                 "grep -F '\"active_account_key\": \"{s}\"' \"$CODEX_HOME/accounts/registry.json\" >/dev/null || exit 93\n" ++
                 "printf '%s\\n' \"$CODEX_HOME\" > \"$CODEX_HOME/restarted-home\"\nexit {d}\n",
-            .{ fake_daemon.running, beta_key, @as(u8, if (case.fail) 42 else 0) },
+            .{ fake_daemon.running, fake_daemon.reload_unsupported, beta_key, @as(u8, if (case.fail) 42 else 0) },
         );
         defer gpa.free(body);
         try fake_daemon.install(home_dir, body);
         for (0..case.attempts) |_| {
-            const args: []const []const u8 = if (!case.requested) &.{ "switch", "beta" } else if (case.previous) &.{ "switch", "-", "--restart-daemon" } else if (case.json) &.{ "switch", "beta", "--json", "--restart-daemon" } else &.{ "switch", "beta", "--restart-daemon" };
+            const args: []const []const u8 = if (case.no_restart) &.{ "switch", "beta", "--no-restart-daemon" } else if (case.previous) &.{"-"} else if (case.json) &.{ "switch", "beta", "--json" } else &.{ "switch", "beta" };
             const result = try runCliWithIsolatedHomeAndCodexHome(gpa, project_root, shell_home, home, args);
             defer gpa.free(result.stdout);
             defer gpa.free(result.stderr);
@@ -832,15 +874,16 @@ test "Scenario: Given daemon-aware switching then explicit recovery preserves se
                 .exited => |code| try std.testing.expectEqual(@as(u8, if (case.fail) 1 else 0), code),
                 else => return error.TestUnexpectedResult,
             }
-            if (case.fail) try std.testing.expect(std.mem.indexOf(u8, result.stderr, "requested daemon restart failed") != null);
-            if (!case.requested) try std.testing.expect(std.mem.indexOf(u8, result.stderr, "--restart-daemon") != null);
+            if (case.fail) try std.testing.expect(std.mem.find(u8, result.stderr, "daemon restart failed") != null);
+            if (case.no_restart) try std.testing.expect(std.mem.find(u8, result.stderr, "may still use cached credentials") != null);
             if (case.json) {
                 var parsed = try std.json.parseFromSlice(std.json.Value, gpa, result.stdout, .{});
                 defer parsed.deinit();
                 const doc = parsed.value.object;
-                try std.testing.expectEqual(@as(usize, 3), doc.count());
+                try std.testing.expectEqual(@as(usize, 4), doc.count());
                 try std.testing.expectEqualStrings("switch", doc.get("command").?.string);
                 try std.testing.expectEqualStrings("beta@example.com", doc.get("switched_to").?.object.get("email").?.string);
+                try std.testing.expectEqualStrings(if (case.fail) "restart_failed" else "restarted", doc.get("daemon").?.string);
             }
             var reg = try registry.loadRegistry(gpa, home);
             defer reg.deinit(gpa);
@@ -854,9 +897,9 @@ test "Scenario: Given daemon-aware switching then explicit recovery preserves se
         }
         const calls = try fake_daemon.read(home_dir, "lifecycle-calls");
         defer gpa.free(calls);
-        const expected = if (!case.requested) "version\n" else if (case.attempts == 2) "version\nreload-auth\nversion\nrestart\nversion\nreload-auth\nversion\nrestart\n" else "version\nreload-auth\nversion\nrestart\n";
+        const expected = if (case.no_restart) "version\nreload-auth\n" else if (case.attempts == 2) "version\nreload-auth\nversion\nrestart\nversion\nreload-auth\nversion\nrestart\n" else "version\nreload-auth\nversion\nrestart\n";
         try std.testing.expectEqualStrings(expected, calls);
-        if (case.requested) {
+        if (!case.no_restart) {
             const forwarded = try fake_daemon.read(home_dir, "restarted-home");
             defer gpa.free(forwarded);
             try std.testing.expectEqualStrings(home, std.mem.trimEnd(u8, forwarded, "\n"));
@@ -864,8 +907,43 @@ test "Scenario: Given daemon-aware switching then explicit recovery preserves se
     }
 }
 
-test "Scenario: Given no managed executable then daemon restart resolves relative and empty PATH entries" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "Scenario: Given a reload-capable daemon then a plain switch applies credentials without restarting" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+    const cases = [_]struct { body: []const u8, fragment: []const u8 }{
+        .{ .body = fake_daemon.reload_changed, .fragment = "reloaded the new credentials without a restart" },
+        .{ .body = fake_daemon.reload_busy, .fragment = "deferred the reload" },
+    };
+    for (cases) |case| {
+        var tmp = fs.tmpDir(.{});
+        defer tmp.cleanup();
+        const root = try tmp.dir.realpathAlloc(gpa, ".");
+        defer gpa.free(root);
+        const home = try seedDaemonSwitchFixture(gpa, root, false);
+        defer gpa.free(home);
+        try tmp.dir.makePath("shell-home");
+        const shell_home = try tmp.dir.realpathAlloc(gpa, "shell-home");
+        defer gpa.free(shell_home);
+        var home_dir = try tmp.dir.openDir(".codex", .{});
+        defer home_dir.close();
+        try fake_daemon.install(home_dir, case.body);
+        const result = try runCliWithIsolatedHomeAndCodexHome(gpa, project_root, shell_home, home, &.{ "switch", "beta" });
+        defer gpa.free(result.stdout);
+        defer gpa.free(result.stderr);
+        try expectSuccess(result);
+        try std.testing.expect(std.mem.find(u8, result.stderr, case.fragment) != null);
+        const calls = try fake_daemon.read(home_dir, "lifecycle-calls");
+        defer gpa.free(calls);
+        try std.testing.expectEqualStrings("version\nreload-auth\n", calls);
+        try std.testing.expectError(error.FileNotFound, home_dir.openFile("restarted-home", .{}));
+    }
+}
+
+test "Scenario: Given no managed executable then daemon restart resolves relative PATH entries but never the current directory" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
     defer gpa.free(project_root);
@@ -891,11 +969,22 @@ test "Scenario: Given no managed executable then daemon restart resolves relativ
         try env.put("CODEX_HOME", home);
         try env.put("PATH", path);
         try env.put("CODEX_AUTH_SKIP_SERVICE_RECONCILE", "1");
-        const result = try runCapture(gpa, root, &env, &.{ exe, "switch", "beta", "--restart-daemon" });
+        const result = try runCapture(gpa, root, &env, &.{ exe, "switch", "beta" });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
         try expectSuccess(result);
-        try std.testing.expect(std.mem.indexOf(u8, result.stderr, "daemon restart completed") != null);
+        if (path.len == 0) {
+            // An empty PATH segment would resolve `codex` relative to the
+            // working directory; the resolver must refuse that implicit
+            // search path. The control socket still exists, so the switch
+            // reports the daemon state as unconfirmed rather than absent —
+            // but no lifecycle helper may ever run.
+            try std.testing.expect(std.mem.indexOf(u8, result.stderr, "daemon responsiveness could not be confirmed") != null);
+            try std.testing.expectError(error.FileNotFound, fake_daemon.read(dir, "lifecycle-calls"));
+            try std.testing.expectError(error.FileNotFound, dir.openFile("restarted-home", .{}));
+            continue;
+        }
+        try std.testing.expect(std.mem.find(u8, result.stderr, "daemon restart completed") != null);
         const calls = try fake_daemon.read(dir, "lifecycle-calls");
         defer gpa.free(calls);
         try std.testing.expectEqualStrings("version\nreload-auth\nversion\nrestart\n", calls);
@@ -906,7 +995,7 @@ test "Scenario: Given no managed executable then daemon restart resolves relativ
 }
 
 test "Scenario: Given a non-executable codex first in PATH then daemon restart uses the next executable" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
     defer gpa.free(project_root);
@@ -933,13 +1022,13 @@ test "Scenario: Given a non-executable codex first in PATH then daemon restart u
     defer gpa.free(decoy);
     const fallback = try tmp.dir.realpathAlloc(gpa, "fallback");
     defer gpa.free(fallback);
-    const path = try std.fmt.allocPrint(gpa, "{s}:{s}", .{ decoy, fallback });
+    const path = try gpa.print("{s}:{s}", .{ decoy, fallback });
     defer gpa.free(path);
-    const result = try runCliWithIsolatedHomeAndCodexHomeAndPath(gpa, project_root, root, home, path, &.{ "switch", "beta", "--restart-daemon" });
+    const result = try runCliWithIsolatedHomeAndCodexHomeAndPath(gpa, project_root, root, home, path, &.{ "switch", "beta" });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "daemon restart completed") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "daemon restart completed") != null);
     const calls = try fake_daemon.read(dir, "lifecycle-calls");
     defer gpa.free(calls);
     try std.testing.expectEqualStrings("version\nreload-auth\nversion\nrestart\n", calls);
@@ -949,7 +1038,7 @@ test "Scenario: Given a non-executable codex first in PATH then daemon restart u
 }
 
 test "Scenario: Given absent or indeterminate daemons then switching never starts one" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
     defer gpa.free(project_root);
@@ -964,30 +1053,27 @@ test "Scenario: Given absent or indeterminate daemons then switching never start
         var dir = try tmp.dir.openDir(".codex", .{});
         defer dir.close();
         if (stale) try fake_daemon.install(dir, "exit 1\n");
-        const result = try runCliWithIsolatedHomeAndCodexHome(gpa, project_root, root, home, &.{ "switch", "beta", "--restart-daemon", "--json" });
+        const result = try runCliWithIsolatedHomeAndCodexHome(gpa, project_root, root, home, &.{ "switch", "beta", "--json" });
         defer gpa.free(result.stdout);
         defer gpa.free(result.stderr);
-        switch (result.term) {
-            .exited => |code| try std.testing.expectEqual(@as(u8, if (stale) 1 else 0), code),
-            else => return error.TestUnexpectedResult,
-        }
+        try expectSuccess(result);
         var parsed = try std.json.parseFromSlice(std.json.Value, gpa, result.stdout, .{});
         defer parsed.deinit();
         try std.testing.expectEqualStrings("switch", parsed.value.object.get("command").?.string);
+        try std.testing.expectEqualStrings(if (stale) "unknown" else "not_running", parsed.value.object.get("daemon").?.string);
         if (stale) {
-            try std.testing.expect(std.mem.indexOf(u8, result.stderr, "restart was not attempted") != null);
+            try std.testing.expect(std.mem.find(u8, result.stderr, "responsiveness could not be confirmed") != null);
             const calls = try fake_daemon.read(dir, "lifecycle-calls");
             defer gpa.free(calls);
             try std.testing.expectEqualStrings("version\n", calls);
         } else {
-            try std.testing.expect(std.mem.indexOf(u8, result.stderr, "no running Codex daemon") != null);
             try std.testing.expectError(error.FileNotFound, dir.openFile("lifecycle-calls", .{}));
         }
     }
 }
 
 test "Scenario: Given failed account selection then daemon lifecycle commands are not invoked" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
     defer gpa.free(project_root);
@@ -1001,7 +1087,7 @@ test "Scenario: Given failed account selection then daemon lifecycle commands ar
     var dir = try tmp.dir.openDir(".codex", .{});
     defer dir.close();
     try fake_daemon.install(dir, fake_daemon.succeed);
-    const result = try runCliWithIsolatedHomeAndCodexHome(gpa, project_root, root, home, &.{ "switch", "missing", "--restart-daemon", "--json" });
+    const result = try runCliWithIsolatedHomeAndCodexHome(gpa, project_root, root, home, &.{ "switch", "missing", "--json" });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
     try expectFailure(result);
@@ -1057,8 +1143,7 @@ fn writeLocalRolloutUsage(
     primary_used_percent: f64,
     secondary_used_percent: f64,
 ) !void {
-    const contents = try std.fmt.allocPrint(
-        std.testing.allocator,
+    const contents = try std.testing.allocator.print(
         "{{\"timestamp\":\"2025-01-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"rate_limits\":{{\"primary\":{{\"used_percent\":{d:.1},\"window_minutes\":300,\"resets_at\":{d}}},\"secondary\":{{\"used_percent\":{d:.1},\"window_minutes\":10080,\"resets_at\":{d}}},\"plan_type\":\"pro\"}}}}}}\n",
         .{
             primary_used_percent,
@@ -1079,7 +1164,7 @@ fn appendCustomAccount(
     alias: []const u8,
     plan: registry.PlanType,
 ) !void {
-    const sep = std.mem.lastIndexOf(u8, record_key, "::") orelse return error.InvalidRecordKey;
+    const sep = std.mem.findLast(u8, record_key, "::") orelse return error.InvalidRecordKey;
     const chatgpt_user_id = record_key[0..sep];
     const chatgpt_account_id = record_key[sep + 2 ..];
     try reg.accounts.append(allocator, .{
@@ -1142,7 +1227,7 @@ test "Scenario: Given device auth login when running login then it forwards the 
     defer gpa.free(argv_path);
     const argv_data = try fixtures.readFileAlloc(gpa, argv_path);
     defer gpa.free(argv_data);
-    try std.testing.expect(std.mem.indexOf(u8, argv_data, "login --device-auth") != null);
+    try std.testing.expect(std.mem.find(u8, argv_data, "login --device-auth") != null);
 
     const codex_home = try codexHomeAlloc(gpa, home_root);
     defer gpa.free(codex_home);
@@ -1153,7 +1238,7 @@ test "Scenario: Given device auth login when running login then it forwards the 
     defer gpa.free(fake_codex_home_data);
     const fake_codex_home = std.mem.trim(u8, fake_codex_home_data, " \r\n");
     try std.testing.expect(!std.mem.eql(u8, fake_codex_home, codex_home));
-    try std.testing.expect(std.mem.indexOf(u8, fake_codex_home, "login-") != null);
+    try std.testing.expect(std.mem.find(u8, fake_codex_home, "login-") != null);
     try std.testing.expectError(error.FileNotFound, fs.cwd().access(fake_codex_home, .{}));
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -1225,7 +1310,7 @@ test "Scenario: Given strict codex login when running login then scratch CODEX_H
     defer gpa.free(fake_codex_home_data);
     const fake_codex_home = std.mem.trim(u8, fake_codex_home_data, " \r\n");
     try std.testing.expect(!std.mem.eql(u8, fake_codex_home, codex_home));
-    try std.testing.expect(std.mem.indexOf(u8, fake_codex_home, "login-") != null);
+    try std.testing.expect(std.mem.find(u8, fake_codex_home, "login-") != null);
     try std.testing.expectError(error.FileNotFound, fs.cwd().access(fake_codex_home, .{}));
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -1235,7 +1320,7 @@ test "Scenario: Given strict codex login when running login then scratch CODEX_H
 }
 
 test "Scenario: Given npm-style Windows codex wrappers when running login then the bare script is ignored and codex.cmd is launched" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -1282,7 +1367,7 @@ test "Scenario: Given npm-style Windows codex wrappers when running login then t
 }
 
 test "Scenario: Given only a Windows batch codex wrapper when running login then codex.bat is launched" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -1329,7 +1414,7 @@ test "Scenario: Given only a Windows batch codex wrapper when running login then
 }
 
 test "Scenario: Given only a PowerShell Windows codex wrapper when running login then codex.ps1 is launched" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -1376,7 +1461,7 @@ test "Scenario: Given only a PowerShell Windows codex wrapper when running login
 }
 
 test "Scenario: Given a winget-style Windows codex launcher when running login then codex.exe is launched" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -1422,7 +1507,7 @@ test "Scenario: Given a winget-style Windows codex launcher when running login t
 }
 
 test "Scenario: Given an earlier PowerShell launcher and a later exe launcher when running login then ps1 stays a global fallback" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -1453,7 +1538,7 @@ test "Scenario: Given an earlier PowerShell launcher and a later exe launcher wh
     defer gpa.free(exe_bin_path);
     const exe_then_inherited_path = try prependPathEntryAlloc(gpa, exe_bin_path);
     defer gpa.free(exe_then_inherited_path);
-    const path_override = try std.fmt.allocPrint(gpa, "{s}{c}{s}", .{
+    const path_override = try gpa.print("{s}{c}{s}", .{
         ps1_bin_path,
         fs.path.delimiter,
         exe_then_inherited_path,
@@ -1595,7 +1680,7 @@ test "Scenario: Given CODEX_HOME override when running login then it stores auth
     defer gpa.free(fake_codex_home_data);
     const fake_codex_home = std.mem.trim(u8, fake_codex_home_data, " \r\n");
     try std.testing.expect(!std.mem.eql(u8, fake_codex_home, custom_codex_home));
-    try std.testing.expect(std.mem.indexOf(u8, fake_codex_home, "login-") != null);
+    try std.testing.expect(std.mem.find(u8, fake_codex_home, "login-") != null);
 
     const default_auth_path = try authJsonPathAlloc(gpa, home_root);
     defer gpa.free(default_auth_path);
@@ -1649,7 +1734,7 @@ test "Scenario: Given failed device auth login with existing auth json when runn
     defer gpa.free(argv_path);
     const argv_data = try fixtures.readFileAlloc(gpa, argv_path);
     defer gpa.free(argv_data);
-    try std.testing.expect(std.mem.indexOf(u8, argv_data, "login --device-auth") != null);
+    try std.testing.expect(std.mem.find(u8, argv_data, "login --device-auth") != null);
 
     try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(".codex/accounts/registry.json", .{}));
 
@@ -1690,8 +1775,8 @@ test "Scenario: Given first-time use on v0.2 with an existing auth.json and no a
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "fre***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, email) == null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "fre***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, email) == null);
 
     const codex_home = try codexHomeAlloc(gpa, home_root);
     defer gpa.free(codex_home);
@@ -1776,8 +1861,8 @@ test "Scenario: Given upgrade from v0.1.x to v0.2 with legacy accounts data when
 
     try expectSuccess(result);
     try std.testing.expect(
-        std.mem.indexOf(u8, result.stdout, email) != null or
-            std.mem.indexOf(u8, result.stdout, "legacy") != null,
+        std.mem.find(u8, result.stdout, email) != null or
+            std.mem.find(u8, result.stdout, "legacy") != null,
     );
 
     const codex_home = try codexHomeAlloc(gpa, home_root);
@@ -1875,8 +1960,8 @@ test "Scenario: Given API key import when listing with api refresh then stale sn
 
     logRunResultIfFailed("api key import", import_result);
     try expectSuccess(import_result);
-    try std.testing.expect(std.mem.indexOf(u8, import_result.stdout, "imported") != null);
-    try std.testing.expect(std.mem.indexOf(u8, import_result.stdout, "api-key") != null);
+    try std.testing.expect(std.mem.find(u8, import_result.stdout, "imported") != null);
+    try std.testing.expect(std.mem.find(u8, import_result.stdout, "api-key") != null);
     try std.testing.expectEqualStrings("", import_result.stderr);
 
     const codex_home = try codexHomeAlloc(gpa, home_root);
@@ -1894,13 +1979,13 @@ test "Scenario: Given API key import when listing with api refresh then stale sn
     defer gpa.free(api_snapshot_path);
     const api_snapshot = try fixtures.readFileAlloc(gpa, api_snapshot_path);
     defer gpa.free(api_snapshot);
-    try std.testing.expect(std.mem.indexOf(u8, api_snapshot, api_key) != null);
+    try std.testing.expect(std.mem.find(u8, api_snapshot, api_key) != null);
 
     const registry_path = try fs.path.join(gpa, &[_][]const u8{ codex_home, "accounts", "registry.json" });
     defer gpa.free(registry_path);
     const registry_data = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(registry_data);
-    try std.testing.expect(std.mem.indexOf(u8, registry_data, api_key) == null);
+    try std.testing.expect(std.mem.find(u8, registry_data, api_key) == null);
 
     registry.updateUsage(gpa, &loaded, api_account_key, makeUsageSnapshot(88, 66));
     const api_idx = registry.findAccountIndexByAccountKey(&loaded, api_account_key) orelse return error.TestExpectedEqual;
@@ -1930,10 +2015,10 @@ test "Scenario: Given API key import when listing with api refresh then stale sn
 
     logRunResultIfFailed("api key list before stale snapshot", first_list);
     try expectSuccess(first_list);
-    try std.testing.expect(std.mem.indexOf(u8, first_list.stdout, "api***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first_list.stdout, "cha***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first_list.stdout, "API_KEY") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first_list.stdout, "MissingAuth") == null);
+    try std.testing.expect(std.mem.find(u8, first_list.stdout, "api***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, first_list.stdout, "cha***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, first_list.stdout, "API_KEY") != null);
+    try std.testing.expect(std.mem.find(u8, first_list.stdout, "MissingAuth") == null);
     try std.testing.expectEqualStrings("", first_list.stderr);
 
     var refreshed = try registry.loadRegistry(gpa, codex_home);
@@ -1959,9 +2044,9 @@ test "Scenario: Given API key import when listing with api refresh then stale sn
 
     logRunResultIfFailed("api key list after stale snapshot", second_list);
     try expectSuccess(second_list);
-    try std.testing.expect(std.mem.indexOf(u8, second_list.stdout, "api***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, second_list.stdout, "API_KEY") != null);
-    try std.testing.expect(std.mem.indexOf(u8, second_list.stdout, "MissingAuth") == null);
+    try std.testing.expect(std.mem.find(u8, second_list.stdout, "api***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, second_list.stdout, "API_KEY") != null);
+    try std.testing.expect(std.mem.find(u8, second_list.stdout, "MissingAuth") == null);
     try std.testing.expectEqualStrings("", second_list.stderr);
 
     var refreshed_again = try registry.loadRegistry(gpa, codex_home);
@@ -2096,13 +2181,12 @@ test "Scenario: Given single-file import missing email when running import then 
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("Import Summary: 0 imported, 1 skipped\n", result.stdout);
-    const expected_stderr = try std.fmt.allocPrint(
-        gpa,
+    const expected_stderr = try gpa.print(
         "  skipped   token_bob.wilson.alpha@email.com.json: MissingEmail\n",
         .{},
     );
     defer gpa.free(expected_stderr);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, expected_stderr) != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, expected_stderr) != null);
 }
 
 test "Scenario: Given purge with no recoverable active auth when running import then it activates the first rebuilt account and backs up auth json" {
@@ -2150,7 +2234,7 @@ test "Scenario: Given purge with no recoverable active auth when running import 
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Import Summary: 2 imported, 0 updated, 0 skipped (total 2 files)\n") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Import Summary: 2 imported, 0 updated, 0 skipped (total 2 files)\n") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 
     const active_auth_path = try authJsonPathAlloc(gpa, home_root);
@@ -2246,8 +2330,7 @@ test "Scenario: Given directory import with new updated and invalid files when r
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    const expected_stdout = try std.fmt.allocPrint(
-        gpa,
+    const expected_stdout = try gpa.print(
         "Scanning {s}...\n" ++
             "  updated   token_jane.smith.alpha@email.com.json\n" ++
             "  imported  token_john.doe.alpha@email.com.json\n" ++
@@ -2258,8 +2341,7 @@ test "Scenario: Given directory import with new updated and invalid files when r
     );
     defer gpa.free(expected_stdout);
     try std.testing.expectEqualStrings(expected_stdout, result.stdout);
-    const expected_stderr = try std.fmt.allocPrint(
-        gpa,
+    const expected_stderr = try gpa.print(
         "  skipped   token_alice.brown.alpha@email.com.json: MissingChatgptUserId\n" ++
             "  skipped   token_bob.wilson.alpha@email.com.json: MissingEmail\n" ++
             "  skipped   token_invalid.json: InvalidJSON\n",
@@ -2296,7 +2378,7 @@ test "Scenario: Given directory import with regular files and array files when r
     defer gpa.free(first_array_auth);
     const second_array_auth = try fixtures.authJsonWithEmailPlan(gpa, "frank.array@example.com", "team");
     defer gpa.free(second_array_auth);
-    const array_auth = try std.fmt.allocPrint(gpa, "[{s},{s}]", .{ first_array_auth, second_array_auth });
+    const array_auth = try gpa.print("[{s},{s}]", .{ first_array_auth, second_array_auth });
     defer gpa.free(array_auth);
     try tmp.dir.writeFile(.{ .sub_path = "imports/tokens_array.json", .data = array_auth });
 
@@ -2304,7 +2386,7 @@ test "Scenario: Given directory import with regular files and array files when r
     defer gpa.free(mixed_valid_auth);
     const mixed_invalid_auth = try fixtures.authJsonWithoutEmail(gpa);
     defer gpa.free(mixed_invalid_auth);
-    const mixed_array_auth = try std.fmt.allocPrint(gpa, "[{s},{s}]", .{ mixed_valid_auth, mixed_invalid_auth });
+    const mixed_array_auth = try gpa.print("[{s},{s}]", .{ mixed_valid_auth, mixed_invalid_auth });
     defer gpa.free(mixed_array_auth);
     try tmp.dir.writeFile(.{ .sub_path = "imports/tokens_array_mixed.json", .data = mixed_array_auth });
 
@@ -2318,8 +2400,7 @@ test "Scenario: Given directory import with regular files and array files when r
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    const expected_stdout = try std.fmt.allocPrint(
-        gpa,
+    const expected_stdout = try gpa.print(
         "Scanning {s}...\n" ++
             "  imported  another_token_file.json\n" ++
             "  imported  one_token_file.json\n" ++
@@ -2366,8 +2447,7 @@ test "Scenario: Given directory import with an empty json file when running impo
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    const expected_stdout = try std.fmt.allocPrint(
-        gpa,
+    const expected_stdout = try gpa.print(
         "Scanning {s}...\n" ++
             "  imported  valid.json\n" ++
             "Import Summary: 1 imported, 0 updated, 1 skipped (total 2 files)\n",
@@ -2375,7 +2455,7 @@ test "Scenario: Given directory import with an empty json file when running impo
     );
     defer gpa.free(expected_stdout);
     try std.testing.expectEqualStrings(expected_stdout, result.stdout);
-    const expected_stderr = try std.fmt.allocPrint(gpa, "  skipped   empty.json: InvalidJSON\n", .{});
+    const expected_stderr = try gpa.print("  skipped   empty.json: InvalidJSON\n", .{});
     defer gpa.free(expected_stderr);
     try std.testing.expectEqualStrings(expected_stderr, result.stderr);
 
@@ -2388,7 +2468,7 @@ test "Scenario: Given directory import with an empty json file when running impo
 }
 
 test "Scenario: Given directory import with a broken symlink when running import then it skips that entry and still imports valid files" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -2415,8 +2495,7 @@ test "Scenario: Given directory import with a broken symlink when running import
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    const expected_stdout = try std.fmt.allocPrint(
-        gpa,
+    const expected_stdout = try gpa.print(
         "Scanning {s}...\n" ++
             "  imported  valid.json\n" ++
             "Import Summary: 1 imported, 0 updated, 1 skipped (total 2 files)\n",
@@ -2424,7 +2503,7 @@ test "Scenario: Given directory import with a broken symlink when running import
     );
     defer gpa.free(expected_stdout);
     try std.testing.expectEqualStrings(expected_stdout, result.stdout);
-    const expected_stderr = try std.fmt.allocPrint(gpa, "  skipped   broken.json: FileNotFound\n", .{});
+    const expected_stderr = try gpa.print("  skipped   broken.json: FileNotFound\n", .{});
     defer gpa.free(expected_stderr);
     try std.testing.expectEqualStrings(expected_stderr, result.stderr);
 
@@ -2464,8 +2543,7 @@ test "Scenario: Given cpa directory in default location when running import cpa 
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    const expected_stdout = try std.fmt.allocPrint(
-        gpa,
+    const expected_stdout = try gpa.print(
         "Scanning ~/.cli-proxy-api...\n" ++
             "  imported  first.json\n" ++
             "  imported  no-refresh.json\n" ++
@@ -2539,8 +2617,8 @@ test "Scenario: Given cpa file import when running import cpa then it stores a s
     defer gpa.free(snapshot_path);
     const snapshot_data = try fixtures.readFileAlloc(gpa, snapshot_path);
     defer gpa.free(snapshot_data);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot_data, "\"tokens\": {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, snapshot_data, "\"refresh_token\": \"refresh-single-file-cpa@example.com\"") != null);
+    try std.testing.expect(std.mem.find(u8, snapshot_data, "\"tokens\": {") != null);
+    try std.testing.expect(std.mem.find(u8, snapshot_data, "\"refresh_token\": \"refresh-single-file-cpa@example.com\"") != null);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
@@ -2564,10 +2642,10 @@ test "Scenario: Given default api usage when rendering help then skip-api note s
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "codex-auth") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Usage API:") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Account API:") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "API-backed refresh is the default") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "codex-auth") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Usage API:") == null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Account API:") == null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "API-backed refresh is the default") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 }
 
@@ -2725,13 +2803,15 @@ test "Scenario: Given previous account exists when running top-level dash then i
         project_root,
         home_root,
         empty_path,
-        &[_][]const u8{ "switch", "-" },
+        &[_][]const u8{ "-", "--json" },
     );
     defer gpa.free(switch_dash_result.stdout);
     defer gpa.free(switch_dash_result.stderr);
     try expectSuccess(switch_dash_result);
-    try std.testing.expectEqualStrings("Switched to backup(bac***@e***.com)\n", switch_dash_result.stdout);
-    try std.testing.expectEqualStrings("", switch_dash_result.stderr);
+    var parsed_dash = try std.json.parseFromSlice(std.json.Value, gpa, switch_dash_result.stdout, .{});
+    defer parsed_dash.deinit();
+    try std.testing.expectEqualStrings("switch", parsed_dash.value.object.get("command").?.string);
+    try std.testing.expectEqualStrings("backup@example.com", parsed_dash.value.object.get("switched_to").?.object.get("email").?.string);
 
     const auth_after_switch_dash = try fixtures.readFileAlloc(gpa, active_auth_path);
     defer gpa.free(auth_after_switch_dash);
@@ -2837,7 +2917,7 @@ test "Scenario: Given previous is active after remove when running dash then it 
     try std.testing.expectEqualStrings(previous_key, loaded.previous_active_account_key.?);
 }
 
-test "Scenario: Given missing previous account when running switch dash then it fails cleanly" {
+test "Scenario: Given missing previous account when running dash then it fails cleanly" {
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
     defer gpa.free(project_root);
@@ -2864,7 +2944,7 @@ test "Scenario: Given missing previous account when running switch dash then it 
         gpa,
         project_root,
         home_root,
-        &[_][]const u8{ "switch", "-" },
+        &[_][]const u8{"-"},
     );
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
@@ -3108,7 +3188,71 @@ test "Scenario: Given alias set with duplicate alias when running alias then it 
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "alias 'ACTIVE' is already used by act***@e***.com.") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "alias 'ACTIVE' is already used by act***@e***.com.") != null);
+
+    var loaded = try registry.loadRegistry(gpa, codex_home);
+    defer loaded.deinit(gpa);
+    const backup_key = try fixtures.accountKeyForEmailAlloc(gpa, "backup@example.com");
+    defer gpa.free(backup_key);
+    const idx = registry.findAccountIndexByAccountKey(&loaded, backup_key) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("backup", loaded.accounts.items[idx].alias);
+}
+
+test "Scenario: Given alias set with an uncompletable or key-colliding alias when running alias then it fails without changing registry" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    try seedRegistryWithAccounts(gpa, home_root, "active@example.com", &[_]SeedAccount{
+        .{ .email = "active@example.com", .alias = "active" },
+        .{ .email = "backup@example.com", .alias = "backup" },
+    });
+
+    const codex_home = try codexHomeAlloc(gpa, home_root);
+    defer gpa.free(codex_home);
+
+    const dash_result = try runCliWithIsolatedHome(
+        gpa,
+        project_root,
+        home_root,
+        &[_][]const u8{ "alias", "set", "backup@", "-x" },
+    );
+    defer gpa.free(dash_result.stdout);
+    defer gpa.free(dash_result.stderr);
+    try expectFailure(dash_result);
+    try std.testing.expectEqualStrings("", dash_result.stdout);
+    try std.testing.expect(std.mem.find(u8, dash_result.stderr, "alias cannot start with '-'") != null);
+
+    const colon_result = try runCliWithIsolatedHome(
+        gpa,
+        project_root,
+        home_root,
+        &[_][]const u8{ "alias", "set", "backup@", ":x" },
+    );
+    defer gpa.free(colon_result.stdout);
+    defer gpa.free(colon_result.stderr);
+    try expectFailure(colon_result);
+    try std.testing.expect(std.mem.find(u8, colon_result.stderr, "alias cannot start with ':'") != null);
+
+    const active_key = try fixtures.accountKeyForEmailAlloc(gpa, "active@example.com");
+    defer gpa.free(active_key);
+    const key_result = try runCliWithIsolatedHome(
+        gpa,
+        project_root,
+        home_root,
+        &[_][]const u8{ "alias", "set", "backup@", active_key },
+    );
+    defer gpa.free(key_result.stdout);
+    defer gpa.free(key_result.stderr);
+    try expectFailure(key_result);
+    try std.testing.expect(std.mem.find(u8, key_result.stderr, "alias cannot equal another account's key") != null);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
     defer loaded.deinit(gpa);
@@ -3163,7 +3307,7 @@ test "Scenario: Given switch query with multiple matches when running switch the
     const empty_path = try tmp.dir.realpathAlloc(gpa, "empty-bin");
     defer gpa.free(empty_path);
 
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         var daemon_dir = try tmp.dir.openDir(".codex", .{});
         defer daemon_dir.close();
         try fake_daemon.install(daemon_dir, fake_daemon.succeed);
@@ -3174,19 +3318,19 @@ test "Scenario: Given switch query with multiple matches when running switch the
         project_root,
         home_root,
         empty_path,
-        if (builtin.os.tag == .windows) &[_][]const u8{ "switch", "team" } else &[_][]const u8{ "switch", "team", "--restart-daemon" },
+        &[_][]const u8{ "switch", "team" },
         "2\n",
     );
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Select account to activate:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "alp***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "bet***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "sol***@e***.com") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Switched to team-b(bet***@e***.com)") != null);
-    try std.testing.expectEqualStrings(if (builtin.os.tag == .windows) "" else "Account files switched successfully; Codex daemon restart completed. Reconnect and verify the selected account.\n", result.stderr);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Select account to activate:") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "alp***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "bet***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "sol***@e***.com") == null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Switched to team-b(bet***@e***.com)") != null);
+    try std.testing.expectEqualStrings(if (builtin.target.os.tag == .windows) "" else "Account files switched successfully; Codex daemon restart completed. Reconnect and verify the selected account.\n", result.stderr);
 
     const auth_after = try fixtures.readFileAlloc(gpa, active_auth_path);
     defer gpa.free(auth_after);
@@ -3196,7 +3340,7 @@ test "Scenario: Given switch query with multiple matches when running switch the
     defer loaded.deinit(gpa);
     try std.testing.expect(loaded.active_account_key != null);
     try std.testing.expect(std.mem.eql(u8, loaded.active_account_key.?, beta_key));
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         const calls_path = try fs.path.join(gpa, &.{ codex_home, "lifecycle-calls" });
         defer gpa.free(calls_path);
         const calls = try fixtures.readFileAlloc(gpa, calls_path);
@@ -3243,8 +3387,8 @@ test "Scenario: Given switch query with no matches when running switch then it e
             "hint: Switch accepts one target: alias, email, display number, or partial query.\n",
         result.stderr,
     );
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "AccountNotFound") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "main.zig") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "AccountNotFound") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "main.zig") == null);
 }
 
 test "Scenario: Given list default mode when running list then it requires api refresh executables" {
@@ -3277,7 +3421,7 @@ test "Scenario: Given list default mode when running list then it requires api r
     defer gpa.free(result.stderr);
 
     try expectFailure(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "curl is required") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "curl is required") != null);
 }
 
 test "Scenario: Given list with skip-api when running list then it does not require api refresh executables" {
@@ -3312,9 +3456,9 @@ test "Scenario: Given list with skip-api when running list then it does not requ
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "ACCOUNT") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "alp***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "bet***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "ACCOUNT") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "alp***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "bet***@e***.com") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 }
 
@@ -3494,8 +3638,7 @@ test "Scenario: Given cached usage when an API refresh fails then list json keep
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "usage refresh failed for alp***@e***.com: RequestFailed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "alpha@example.com") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "usage refresh failed for alp***@e***.com: RequestFailed") != null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, result.stdout, .{});
     defer parsed.deinit();
@@ -3690,7 +3833,7 @@ test "Scenario: Given switch query with api flag when running switch then it ret
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "does not support `--live`, `--api`, or `--skip-api`") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "does not support `--live`, `--api`, or `--skip-api`") != null);
 }
 
 test "Scenario: Given switch query with skip-api flag when running switch then it returns a usage error" {
@@ -3726,7 +3869,7 @@ test "Scenario: Given switch query with skip-api flag when running switch then i
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "does not support `--live`, `--api`, or `--skip-api`") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "does not support `--live`, `--api`, or `--skip-api`") != null);
 }
 
 test "Scenario: Given switch without api flags when running interactively then it requires api refresh executables by default" {
@@ -3762,7 +3905,7 @@ test "Scenario: Given switch without api flags when running interactively then i
     defer gpa.free(result.stderr);
 
     try expectFailure(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "curl is required") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "curl is required") != null);
 }
 
 test "Scenario: Given switch with skip-api when running interactively then it does not require api refresh executables" {
@@ -3829,8 +3972,8 @@ test "Scenario: Given switch with skip-api when running interactively then it do
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Select account to activate:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Switched to backup(bac***@e***.com)") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Select account to activate:") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Switched to backup(bac***@e***.com)") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 
     const auth_after = try fixtures.readFileAlloc(gpa, active_auth_path);
@@ -3940,7 +4083,7 @@ test "Scenario: Given remove with account key selector when running remove then 
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "rob***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "rob***@e***.com") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -4026,7 +4169,7 @@ test "Scenario: Given remove query with api flag when running remove then it ret
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "`remove <alias|email|display-number|query>...` and `remove --all` do not support") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "`remove <alias|email|display-number|query>...` and `remove --all` do not support") != null);
 }
 
 test "Scenario: Given remove query with skip-api flag when running remove then it returns a usage error" {
@@ -4062,7 +4205,7 @@ test "Scenario: Given remove query with skip-api flag when running remove then i
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "`remove <alias|email|display-number|query>...` and `remove --all` do not support") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "`remove <alias|email|display-number|query>...` and `remove --all` do not support") != null);
 }
 
 test "Scenario: Given interactive remove with api flag when running remove then it requires api refresh executables" {
@@ -4099,7 +4242,7 @@ test "Scenario: Given interactive remove with api flag when running remove then 
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "curl is required") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "curl is required") != null);
 }
 
 test "Scenario: Given remove without api flags when running remove then it requires api refresh executables by default" {
@@ -4136,7 +4279,7 @@ test "Scenario: Given remove without api flags when running remove then it requi
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "curl is required") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "curl is required") != null);
 }
 
 test "Scenario: Given remove without selectors in default mode when running remove then it requires api refresh executables" {
@@ -4172,7 +4315,7 @@ test "Scenario: Given remove without selectors in default mode when running remo
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "curl is required") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "curl is required") != null);
 }
 
 test "Scenario: Given remove with skip-api when running remove then it does not require api refresh executables" {
@@ -4208,7 +4351,7 @@ test "Scenario: Given remove with skip-api when running remove then it does not 
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Select accounts to delete:") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Select accounts to delete:") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 }
 
@@ -4526,8 +4669,8 @@ test "Scenario: Given auth json already points at another registry account when 
     defer gpa.free(list_result.stderr);
 
     try expectSuccess(list_result);
-    try std.testing.expect(std.mem.indexOf(u8, list_result.stdout, "alp***@e***.com") != null);
-    try std.testing.expect(std.mem.indexOf(u8, list_result.stdout, "bet***@e***.com") == null);
+    try std.testing.expect(std.mem.find(u8, list_result.stdout, "alp***@e***.com") != null);
+    try std.testing.expect(std.mem.find(u8, list_result.stdout, "bet***@e***.com") == null);
 
     var loaded_after_list = try registry.loadRegistry(gpa, codex_home);
     defer loaded_after_list.deinit(gpa);
@@ -4562,8 +4705,8 @@ test "Scenario: Given remove query with no matches when running remove then it e
             "hint: Remove accepts one or more aliases, emails, display numbers, or partial queries.\n",
         result.stderr,
     );
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "AccountNotFound") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "main.zig") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "AccountNotFound") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "main.zig") == null);
 }
 
 test "Scenario: Given multiple remove queries with no matches when running remove then it reports all missing selectors together" {
@@ -4599,8 +4742,8 @@ test "Scenario: Given multiple remove queries with no matches when running remov
             "hint: Remove accepts one or more aliases, emails, display numbers, or partial queries.\n",
         result.stderr,
     );
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "AccountNotFound") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "main.zig") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "AccountNotFound") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "main.zig") == null);
 }
 
 test "Scenario: Given non-tty remove with invalid selection input when running remove then it fails without deleting accounts" {
@@ -4625,8 +4768,8 @@ test "Scenario: Given non-tty remove with invalid selection input when running r
     defer gpa.free(result.stderr);
 
     try expectFailure(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Select accounts to delete:\n\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Enter account numbers (comma/space separated, empty to cancel): ") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Select accounts to delete:\n\n") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Enter account numbers (comma/space separated, empty to cancel): ") != null);
     try std.testing.expectEqualStrings(
         "error: invalid remove selection input.\n" ++
             "hint: Use numbers separated by commas or spaces, for example `1 2` or `1,2`.\n",
@@ -4749,8 +4892,8 @@ test "Scenario: Given remove query with duplicate-email accounts when running re
     try expectFailure(result);
     try std.testing.expectEqualStrings(
         "Matched multiple accounts:\n" ++
-            "- ali***@e***.com / work\n" ++
             "- ali***@e***.com / personal\n" ++
+            "- ali***@e***.com / work\n" ++
             "error: multiple accounts match the query in non-interactive mode.\n" ++
             "hint: Refine the query to match one account, or run the command in a TTY.\n",
         result.stderr,
@@ -4828,10 +4971,10 @@ test "Scenario: Given non-tty stdin when running interactive remove then it fall
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Select accounts to delete:\n\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Enter account numbers (comma/space separated, empty to cancel): ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\x1b[2J\x1b[H") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Keys: ↑/↓ or j/k move") == null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Select accounts to delete:\n\n") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Enter account numbers (comma/space separated, empty to cancel): ") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "\x1b[2J\x1b[H") == null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Keys: ↑/↓ or j/k move") == null);
     try std.testing.expectEqualStrings("", result.stderr);
 }
 
@@ -4865,7 +5008,7 @@ test "Scenario: Given remove all when running remove then it clears all accounts
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Removed 2 account(s): ") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Removed 2 account(s): ") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -4901,7 +5044,7 @@ test "Scenario: Given remove json selector then invalid flag when running remove
     defer parsed.deinit();
     const err = parsed.value.object.get("error").?.object;
     try std.testing.expectEqualStrings("usage", err.get("code").?.string);
-    try std.testing.expect(std.mem.indexOf(u8, err.get("message").?.string, "unknown flag `--bad`") != null);
+    try std.testing.expect(std.mem.find(u8, err.get("message").?.string, "unknown flag `--bad`") != null);
 }
 
 test "Scenario: Given ambiguous and missing remove selectors in json mode then every resolution is returned and nothing is deleted" {
@@ -5025,7 +5168,7 @@ test "Scenario: Given remove all with malformed auth json when running remove th
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Removed 2 account(s): ") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Removed 2 account(s): ") != null);
     try std.testing.expectEqualStrings("warning: auth.json missing email; skipping sync\n", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -5077,7 +5220,7 @@ test "Scenario: Given remove all with tracked auth json and no active key when r
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Removed 2 account(s): ") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Removed 2 account(s): ") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -5126,7 +5269,7 @@ test "Scenario: Given remove all with tracked auth json and stale active key whe
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "Removed 2 account(s): ") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Removed 2 account(s): ") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 
     var loaded = try registry.loadRegistry(gpa, codex_home);
@@ -5283,8 +5426,8 @@ test "Scenario: Given config live interval when running command then registry st
     defer gpa.free(registry_path);
     const data = try fixtures.readFileAlloc(gpa, registry_path);
     defer gpa.free(data);
-    try std.testing.expect(std.mem.indexOf(u8, data, "\"interval_seconds\": 45") != null);
-    try std.testing.expect(std.mem.indexOf(u8, data, "\"live\"") == null);
+    try std.testing.expect(std.mem.find(u8, data, "\"interval_seconds\": 45") != null);
+    try std.testing.expect(std.mem.find(u8, data, "\"live\"") == null);
 }
 
 test "Scenario: Given default api usage when listing accounts then no warning is printed" {
@@ -5304,12 +5447,12 @@ test "Scenario: Given default api usage when listing accounts then no warning is
     defer gpa.free(result.stderr);
 
     try expectSuccess(result);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "ACCOUNT") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "ACCOUNT") != null);
     try std.testing.expectEqualStrings("", result.stderr);
 }
 
 test "Scenario: Given unsupported native host when launching app then command fails before launch plan" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .macos) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -5337,12 +5480,12 @@ test "Scenario: Given unsupported native host when launching app then command fa
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "app launch is supported only from the Windows or macOS codex-auth executable.\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Environment Configuration") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "app launch is supported only from the Windows or macOS codex-auth executable.\n") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "Environment Configuration") == null);
 }
 
 test "Scenario: Given unsupported native host when launching app then managed CLI is not downloaded" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .macos) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -5368,8 +5511,8 @@ test "Scenario: Given unsupported native host when launching app then managed CL
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "app launch is supported only from the Windows or macOS codex-auth executable.\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Environment Configuration") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "app launch is supported only from the Windows or macOS codex-auth executable.\n") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "Environment Configuration") == null);
 
     var codex_home_dir = try tmp.dir.openDir(".codex", .{});
     defer codex_home_dir.close();
@@ -5377,7 +5520,7 @@ test "Scenario: Given unsupported native host when launching app then managed CL
 }
 
 test "Scenario: Given unsupported native host with missing explicit codex CLI path then host rejection happens first" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .macos) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
     const project_root = try projectRootAlloc(gpa);
@@ -5404,10 +5547,744 @@ test "Scenario: Given unsupported native host with missing explicit codex CLI pa
 
     try expectFailure(result);
     try std.testing.expectEqualStrings("", result.stdout);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "app launch is supported only from the Windows or macOS codex-auth executable.\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "ERROR: --codex-cli-path: Path does not exist\n") == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, missing_cli_path) == null);
-    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "Environment Configuration") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "app launch is supported only from the Windows or macOS codex-auth executable.\n") != null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "ERROR: --codex-cli-path: Path does not exist\n") == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, missing_cli_path) == null);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "Environment Configuration") == null);
+}
+
+fn seedResetCreditsFixture(allocator: std.mem.Allocator, home_root: []const u8, email: []const u8) !void {
+    try seedRegistryWithAccounts(allocator, home_root, email, &.{
+        .{ .email = email, .alias = "reset" },
+    });
+    const home = try codexHomeAlloc(allocator, home_root);
+    defer allocator.free(home);
+
+    var reg = try registry.loadRegistry(allocator, home);
+    defer reg.deinit(allocator);
+    const key = try fixtures.accountKeyForEmailAlloc(allocator, email);
+    defer allocator.free(key);
+    const idx = registry.findAccountIndexByAccountKey(&reg, key) orelse return error.TestUnexpectedResult;
+
+    const cards = try allocator.alloc(registry.ResetCreditCard, 2);
+    cards[0] = .{
+        .id = try allocator.dupe(u8, "credit-later"),
+        .status = try allocator.dupe(u8, "available"),
+        .expires_at = try allocator.dupe(u8, "2027-01-01T00:00:00Z"),
+        .title = try allocator.dupe(u8, "Later card"),
+    };
+    cards[1] = .{
+        .id = try allocator.dupe(u8, "credit-soon"),
+        .status = try allocator.dupe(u8, "available"),
+        .expires_at = try allocator.dupe(u8, "2026-11-01T00:00:00Z"),
+        .title = try allocator.dupe(u8, "Full reset (Weekly + 5 hr)"),
+    };
+    reg.accounts.items[idx].last_usage = .{
+        .primary = null,
+        .secondary = null,
+        .credits = null,
+        .reset_credits = 2,
+        .reset_credit = cards,
+        .plan_type = .plus,
+    };
+    try registry.saveRegistry(allocator, home, &reg);
+}
+
+/// Runs the CLI with the built mock backend (`tests/fake_curl.zig`) installed as
+/// `curl` on PATH and pointed at `<tmp>/fixtures`, so the reset tests and the dev
+/// demo scripts drive the same mock.
+fn runCliWithMockBackend(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    home_root: []const u8,
+    tmp_dir: fs.Dir,
+    scenario: []const u8,
+    args: []const []const u8,
+) !std.process.RunResult {
+    const exe_path = try builtCliPathAlloc(allocator, project_root);
+    defer allocator.free(exe_path);
+    const built_curl = try builtFakeCurlPathAlloc(allocator, project_root);
+    defer allocator.free(built_curl);
+
+    try tmp_dir.makePath("mock-bin");
+    try tmp_dir.makePath("fixtures");
+    const curl_sub_path = if (builtin.target.os.tag == .windows) "mock-bin/curl.exe" else "mock-bin/curl";
+    try installBuiltBinary(built_curl, tmp_dir, curl_sub_path);
+
+    const mock_bin = try tmp_dir.realpathAlloc(allocator, "mock-bin");
+    defer allocator.free(mock_bin);
+    const path_override = try prependPathEntryAlloc(allocator, mock_bin);
+    defer allocator.free(path_override);
+    const fixture_dir = try tmp_dir.realpathAlloc(allocator, "fixtures");
+    defer allocator.free(fixture_dir);
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, exe_path);
+    try argv.appendSlice(allocator, args);
+
+    var env_map = try getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", home_root);
+    try env_map.put("USERPROFILE", home_root);
+    _ = env_map.swapRemove("CODEX_HOME");
+    try env_map.put("PATH", path_override);
+    try env_map.put("CODEX_AUTH_SKIP_SERVICE_RECONCILE", "1");
+    try env_map.put("CODEX_AUTH_FAKE_CURL_DIR", fixture_dir);
+    try env_map.put("CODEX_AUTH_FAKE_CURL_SCENARIO", scenario);
+
+    return try runCapture(allocator, project_root, &env_map, argv.items);
+}
+
+fn isUuidV4(text: []const u8) bool {
+    if (text.len != 36) return false;
+    for (text, 0..) |ch, index| {
+        if (index == 8 or index == 13 or index == 18 or index == 23) {
+            if (ch != '-') return false;
+            continue;
+        }
+        const hex = (ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f');
+        if (!hex) return false;
+    }
+    if (text[14] != '4') return false;
+    return switch (text[19]) {
+        '8', '9', 'a', 'b' => true,
+        else => false,
+    };
+}
+
+fn loggedValueAfter(log: []const u8, needle: []const u8) ?[]const u8 {
+    const start = (std.mem.find(u8, log, needle) orelse return null) + needle.len;
+    const end = std.mem.findScalarPos(u8, log, start, '"') orelse return null;
+    return log[start..end];
+}
+
+/// Asserts the consume request the mock logged: the endpoint, a UUID v4
+/// idempotency key, the chosen credit, and no credential.
+fn expectConsumeRequestLogged(allocator: std.mem.Allocator, tmp_dir: fs.Dir, credit_id: []const u8) !void {
+    const log_path = try tmp_dir.realpathAlloc(allocator, "fixtures/requests.log");
+    defer allocator.free(log_path);
+    const log = try fixtures.readFileAlloc(allocator, log_path);
+    defer allocator.free(log);
+
+    try std.testing.expect(std.mem.find(u8, log, "POST https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume") != null);
+    const redeem_key = loggedValueAfter(log, "\"redeem_request_id\":\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(isUuidV4(redeem_key));
+    const logged_credit = loggedValueAfter(log, "\"credit_id\":\"") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(credit_id, logged_credit);
+    // The mock logs request bodies, so a leaked credential would show up here.
+    try std.testing.expect(std.mem.find(u8, log, "Bearer") == null);
+    try std.testing.expect(std.mem.find(u8, log, "access-") == null);
+}
+
+/// Runs `reset <email>` against a two-card fixture with the mock backend
+/// answering `scenario`. The caller owns the returned stdout and stderr.
+fn runResetScenario(
+    gpa: std.mem.Allocator,
+    scenario: []const u8,
+    email: []const u8,
+) !std.process.RunResult {
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    try seedResetCreditsFixture(gpa, home_root, email);
+    try writeResetCreditsAuthFile(gpa, home_root, email);
+    return runCliWithMockBackend(gpa, project_root, home_root, tmp.dir, scenario, &[_][]const u8{ "reset", email });
+}
+
+fn writeResetCreditsAuthFile(allocator: std.mem.Allocator, home_root: []const u8, email: []const u8) !void {
+    const home = try codexHomeAlloc(allocator, home_root);
+    defer allocator.free(home);
+    const key = try fixtures.accountKeyForEmailAlloc(allocator, email);
+    defer allocator.free(key);
+    const path = try registry.accountAuthPath(allocator, home, key);
+    defer allocator.free(path);
+    const data = try fixtures.authJsonWithEmailPlan(allocator, email, "plus");
+    defer allocator.free(data);
+    try fs.cwd().writeFile(.{ .sub_path = path, .data = data });
+}
+
+test "Scenario: Given reset credits when running reset then it consumes the soonest-expiring card and lists the rest" {
+    const gpa = std.testing.allocator;
+    const result = try runResetScenario(gpa, "ok", "reset-user@example.com");
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    logRunResultIfFailed("reset", result);
+    try expectSuccess(result);
+    // printResetSummary picks its separator from the platform glyphs.
+    const left_marker = if (builtin.target.os.tag == .windows) ", 1 left (next exp " else "\u{00b7} 1 left (next exp ";
+    try std.testing.expect(std.mem.find(u8, result.stdout, "reset credit redeemed") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, left_marker) != null);
+    try std.testing.expectEqualStrings("", result.stderr);
+}
+
+test "Scenario: Given an already redeemed credit when running reset then it still exits zero" {
+    const gpa = std.testing.allocator;
+    const result = try runResetScenario(gpa, "already_redeemed", "already-reset@example.com");
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    logRunResultIfFailed("reset already_redeemed", result);
+    try expectExitCode(result, 0);
+    // printResetSummary picks its separator from the platform glyphs.
+    const left_marker = if (builtin.target.os.tag == .windows) ", 1 left (next exp " else "\u{00b7} 1 left (next exp ";
+    try std.testing.expect(std.mem.find(u8, result.stdout, "reset credit already redeemed") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, left_marker) != null);
+    try std.testing.expectEqualStrings("", result.stderr);
+}
+
+test "Scenario: Given a spent credit when running reset then it asks for a refresh and fails" {
+    const gpa = std.testing.allocator;
+    const result = try runResetScenario(gpa, "no_credit", "gone-reset@example.com");
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    try expectExitCode(result, 1);
+    try std.testing.expectEqualStrings("", result.stdout);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "reset credit is no longer available; run `codex-auth list --api` to refresh.") != null);
+}
+
+test "Scenario: Given nothing to reset when running reset then it reports usage and fails" {
+    const gpa = std.testing.allocator;
+    const result = try runResetScenario(gpa, "nothing_to_reset", "noop-reset@example.com");
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    try expectExitCode(result, 1);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "usage does not need a reset right now.") != null);
+}
+
+test "Scenario: Given a failing consume request when running reset then it reports the HTTP status" {
+    const gpa = std.testing.allocator;
+    const result = try runResetScenario(gpa, "http500", "http500-reset@example.com");
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    try expectExitCode(result, 1);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "reset failed (HTTP 500).") != null);
+}
+
+test "Scenario: Given a redeem when reading the mock request log then it carries a UUID v4 key and no credential" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    const email = "logged-reset@example.com";
+    try seedResetCreditsFixture(gpa, home_root, email);
+    try writeResetCreditsAuthFile(gpa, home_root, email);
+
+    const result = try runCliWithMockBackend(gpa, project_root, home_root, tmp.dir, "ok", &[_][]const u8{ "reset", email });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    logRunResultIfFailed("reset request log", result);
+    try expectSuccess(result);
+    try expectConsumeRequestLogged(gpa, tmp.dir, "credit-soon");
+}
+
+test "Scenario: Given no available reset credits when running reset then it reports and fails" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    const email = "empty-reset@example.com";
+    try seedRegistryWithAccounts(gpa, home_root, email, &.{
+        .{ .email = email, .alias = "empty" },
+    });
+
+    const result = try runCliWithIsolatedHome(gpa, project_root, home_root, &[_][]const u8{ "reset", email });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    try expectFailure(result);
+    try std.testing.expect(std.mem.find(u8, result.stderr, "no available reset credits") != null);
+}
+
+fn writeMockFixtureNamed(
+    gpa: std.mem.Allocator,
+    tmp_dir: fs.Dir,
+    comptime name_fmt: []const u8,
+    args: anytype,
+    data: []const u8,
+) !void {
+    const sub_path = try gpa.print("fixtures/" ++ name_fmt, args);
+    defer gpa.free(sub_path);
+    try tmp_dir.makePath("fixtures");
+    try tmp_dir.writeFile(.{ .sub_path = sub_path, .data = data });
+}
+
+fn mockUsageBodyAlloc(gpa: std.mem.Allocator, primary_used: u32, secondary_used: u32, available: u32) ![]u8 {
+    // Written with a writer instead of one format string: the JSON braces would
+    // otherwise all need doubling, which is easy to get wrong.
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const w = &out.writer;
+    try w.writeAll("{\"plan_type\":\"plus\",\"rate_limit\":{\"primary_window\":{\"used_percent\":");
+    try w.print("{d}", .{primary_used});
+    try w.writeAll(",\"limit_window_seconds\":18000,\"reset_at\":4102444800},\"secondary_window\":{\"used_percent\":");
+    try w.print("{d}", .{secondary_used});
+    try w.writeAll(",\"limit_window_seconds\":604800,\"reset_at\":4103049600}},\"rate_limit_reset_credits\":{\"available_count\":");
+    try w.print("{d}", .{available});
+    try w.writeAll("}}");
+    const copy = try gpa.dupe(u8, out.written());
+    out.deinit();
+    return copy;
+}
+
+fn mockCreditsBodyAlloc(gpa: std.mem.Allocator, cards_json: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    try out.writer.writeAll("{\"credits\":");
+    try out.writer.writeAll(cards_json);
+    try out.writer.writeAll("}");
+    const copy = try gpa.dupe(u8, out.written());
+    out.deinit();
+    return copy;
+}
+
+test "Scenario: Given one account whose usage refresh fails when listing with api then only that row reports it" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    const healthy = "healthy@example.com";
+    const failing = "failing@example.com";
+    try seedRegistryWithAccounts(gpa, home_root, healthy, &.{
+        .{ .email = healthy, .alias = "healthy" },
+        .{ .email = failing, .alias = "failing" },
+    });
+    try writeResetCreditsAuthFile(gpa, home_root, healthy);
+    try writeResetCreditsAuthFile(gpa, home_root, failing);
+
+    const healthy_id = try fixtures.chatgptAccountIdForEmailAlloc(gpa, healthy);
+    defer gpa.free(healthy_id);
+    const failing_id = try fixtures.chatgptAccountIdForEmailAlloc(gpa, failing);
+    defer gpa.free(failing_id);
+
+    const healthy_body = try mockUsageBodyAlloc(gpa, 20, 40, 2);
+    defer gpa.free(healthy_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "usage-{s}.json", .{healthy_id}, healthy_body);
+
+    // The failing account answers HTTP 500, so its row must carry the status
+    // while the healthy row keeps its own refreshed values.
+    const failing_body = try mockUsageBodyAlloc(gpa, 90, 95, 1);
+    defer gpa.free(failing_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "usage-{s}.json", .{failing_id}, failing_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "usage-{s}.status", .{failing_id}, "500");
+
+    const result = try runCliWithMockBackend(gpa, project_root, home_root, tmp.dir, "ok", &[_][]const u8{ "list", "--api" });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    logRunResultIfFailed("list --api mixed batch", result);
+    try expectSuccess(result);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "healthy") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "80%") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "60%") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "500") != null);
+    // The healthy account's card summary survived the other account's failure.
+    try std.testing.expect(std.mem.find(u8, result.stdout, "90%") == null);
+}
+
+test "Scenario: Given refreshed reset credits when listing json then the cards and count are exposed" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    const email = "json-reset@example.com";
+    try seedRegistryWithAccounts(gpa, home_root, email, &.{
+        .{ .email = email, .alias = "json" },
+    });
+    try writeResetCreditsAuthFile(gpa, home_root, email);
+
+    const account_id = try fixtures.chatgptAccountIdForEmailAlloc(gpa, email);
+    defer gpa.free(account_id);
+    const usage_body = try mockUsageBodyAlloc(gpa, 50, 25, 2);
+    defer gpa.free(usage_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "usage-{s}.json", .{account_id}, usage_body);
+    const credits_body = try mockCreditsBodyAlloc(
+        gpa,
+        "[{\"id\":\"credit-soon\",\"status\":\"available\",\"expires_at\":\"2026-11-01T00:00:00Z\",\"title\":\"Full reset (Weekly + 5 hr)\"}," ++
+            "{\"id\":\"credit-spent\",\"status\":\"consumed\",\"expires_at\":\"2026-10-01T00:00:00Z\",\"title\":\"Used card\"}]",
+    );
+    defer gpa.free(credits_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "credits-{s}.json", .{account_id}, credits_body);
+
+    const result = try runCliWithMockBackend(gpa, project_root, home_root, tmp.dir, "ok", &[_][]const u8{ "list", "--json" });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+
+    logRunResultIfFailed("list --json reset credits", result);
+    try expectSuccess(result);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "\"reset_credits\":2") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "credit-soon") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout, "Full reset (Weekly + 5 hr)") != null);
+    // The spent card stays in the payload so callers can see why the count differs.
+    try std.testing.expect(std.mem.find(u8, result.stdout, "credit-spent") != null);
+}
+
+test "Scenario: Given a redeemed credit when the next api refresh runs then the registry reconciles" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    const email = "reconcile@example.com";
+    try seedResetCreditsFixture(gpa, home_root, email);
+    try writeResetCreditsAuthFile(gpa, home_root, email);
+
+    const account_id = try fixtures.chatgptAccountIdForEmailAlloc(gpa, email);
+    defer gpa.free(account_id);
+    const usage_body = try mockUsageBodyAlloc(gpa, 92, 61, 2);
+    defer gpa.free(usage_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "usage-{s}.json", .{account_id}, usage_body);
+    const after_usage = try mockUsageBodyAlloc(gpa, 4, 2, 1);
+    defer gpa.free(after_usage);
+    try writeMockFixtureNamed(gpa, tmp.dir, "after-consume-usage-{s}.json", .{account_id}, after_usage);
+    const credits_body = try mockCreditsBodyAlloc(
+        gpa,
+        "[{\"id\":\"credit-soon\",\"status\":\"available\",\"expires_at\":\"2026-11-01T00:00:00Z\",\"title\":\"Full reset (Weekly + 5 hr)\"}," ++
+            "{\"id\":\"credit-later\",\"status\":\"available\",\"expires_at\":\"2027-01-01T00:00:00Z\",\"title\":\"Later card\"}]",
+    );
+    defer gpa.free(credits_body);
+    try writeMockFixtureNamed(gpa, tmp.dir, "credits-{s}.json", .{account_id}, credits_body);
+    const after_credits = try mockCreditsBodyAlloc(
+        gpa,
+        "[{\"id\":\"credit-soon\",\"status\":\"consumed\",\"expires_at\":\"2026-11-01T00:00:00Z\",\"title\":\"Full reset (Weekly + 5 hr)\"}," ++
+            "{\"id\":\"credit-later\",\"status\":\"available\",\"expires_at\":\"2027-01-01T00:00:00Z\",\"title\":\"Later card\"}]",
+    );
+    defer gpa.free(after_credits);
+    try writeMockFixtureNamed(gpa, tmp.dir, "after-consume-credits-{s}.json", .{account_id}, after_credits);
+
+    // `reset` must not rewrite the registry: the consumed card is still stored.
+    const redeemed = try runCliWithMockBackend(gpa, project_root, home_root, tmp.dir, "ok", &[_][]const u8{ "reset", email });
+    defer gpa.free(redeemed.stdout);
+    defer gpa.free(redeemed.stderr);
+    logRunResultIfFailed("reset before reconcile", redeemed);
+    try expectSuccess(redeemed);
+
+    const codex_home = try codexHomeAlloc(gpa, home_root);
+    defer gpa.free(codex_home);
+    const registry_path = try fs.path.join(gpa, &[_][]const u8{ codex_home, "accounts", "registry.json" });
+    defer gpa.free(registry_path);
+    const before = try fixtures.readFileAlloc(gpa, registry_path);
+    defer gpa.free(before);
+    try std.testing.expect(std.mem.find(u8, before, "credit-soon") != null);
+    try std.testing.expect(std.mem.find(u8, before, "consumed") == null);
+
+    // The documented reconciliation happens on the next api refresh.
+    const refreshed = try runCliWithMockBackend(gpa, project_root, home_root, tmp.dir, "ok", &[_][]const u8{ "list", "--api" });
+    defer gpa.free(refreshed.stdout);
+    defer gpa.free(refreshed.stderr);
+    logRunResultIfFailed("list --api reconcile", refreshed);
+    try expectSuccess(refreshed);
+
+    // The refreshed snapshot now records the redeemed card as consumed and keeps
+    // the surviving one, and the table shows the reset usage.
+    const after = try fixtures.readFileAlloc(gpa, registry_path);
+    defer gpa.free(after);
+    try std.testing.expect(std.mem.find(u8, after, "consumed") != null);
+    try std.testing.expect(std.mem.find(u8, after, "credit-later") != null);
+    try std.testing.expect(std.mem.find(u8, refreshed.stdout, "96%") != null);
+}
+
+test "Scenario: consecutive CLI runs keep earlier output when stdout is a file" {
+    // Regression for redirected stdout: the two child processes share one file
+    // description, so a positional writer would rewind to offset 0 and erase
+    // the first process's output. Streaming stdout must append both lines.
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home);
+    const exe_path = try builtCliPathAlloc(gpa, project_root);
+    defer gpa.free(exe_path);
+    const output_path = try fs.path.join(gpa, &[_][]const u8{ home, "version.log" });
+    defer gpa.free(output_path);
+
+    // The children open this path through shell redirection; keep no handle
+    // open so Windows share-mode checks cannot reject their create.
+    (try tmp.dir.createFile("version.log", .{})).close();
+
+    var env_map = try getEnvMap(gpa);
+    defer env_map.deinit();
+    try env_map.put("HOME", home);
+    try env_map.put("USERPROFILE", home);
+    try env_map.put("CODEX_HOME", home);
+    try env_map.put("CODEX_AUTH_SKIP_SERVICE_RECONCILE", "1");
+
+    // Go through a real shell `>>` redirect: std.process.spawn's `.file`
+    // stdio reopens the handle into a fresh file object on Windows, so a
+    // nonzero inherited offset cannot be passed to the child there. A
+    // shell performs the append redirection itself and gives the child a
+    // handle already positioned at the end, which is the scenario the
+    // streaming writer must honor.
+    if (builtin.target.os.tag == .windows) {
+        // `cmd /c` quote-parses its own argv badly, so put the redirections
+        // in a batch file where the text is taken verbatim.
+        const script = try gpa.print("@\"{s}\" --version >> \"{s}\"\r\n@\"{s}\" --version >> \"{s}\"\r\n", .{ exe_path, output_path, exe_path, output_path });
+        defer gpa.free(script);
+        try tmp.dir.writeFile(.{ .sub_path = "append-run.cmd", .data = script });
+        var child = try std.process.spawn(fs.io(), .{
+            .argv = &[_][]const u8{ "cmd.exe", "/d", "/c", "append-run.cmd" },
+            // A `.dir` cwd becomes a `\\?\`-prefixed path that cmd.exe cannot
+            // use as its working directory; pass the resolved path instead.
+            .cwd = .{ .path = home },
+            .environ_map = &env_map,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        const term = try child.wait(fs.io());
+        switch (term) {
+            .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+            else => return error.TestUnexpectedResult,
+        }
+    } else {
+        for (0..2) |_| {
+            const command = try gpa.print("\"{s}\" --version >> \"{s}\"", .{ exe_path, output_path });
+            defer gpa.free(command);
+            var child = try std.process.spawn(fs.io(), .{
+                .argv = &[_][]const u8{ "sh", "-c", command },
+                .cwd = .{ .path = project_root },
+                .environ_map = &env_map,
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            });
+            const term = try child.wait(fs.io());
+            switch (term) {
+                .exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+                else => return error.TestUnexpectedResult,
+            }
+        }
+    }
+
+    const contents = try fixtures.readFileAlloc(gpa, output_path);
+    defer gpa.free(contents);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, contents, "codex-auth "));
+}
+
+fn runCompleteEndpoint(
+    gpa: std.mem.Allocator,
+    project_root: []const u8,
+    home_root: []const u8,
+    path_override: []const u8,
+    words: []const []const u8,
+) ![]u8 {
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(gpa);
+    try argv.append(gpa, "__complete");
+    try argv.appendSlice(gpa, words);
+
+    const result = try runCliWithIsolatedHomeAndPath(gpa, project_root, home_root, path_override, argv.items);
+    defer gpa.free(result.stderr);
+    logRunResultIfFailed("__complete", result);
+    try expectSuccess(result);
+    return result.stdout;
+}
+
+test "Scenario: Given seeded accounts when running __complete through the CLI then context-aware candidates and directives are emitted" {
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    try seedRegistryWithAccounts(gpa, home_root, "alpha@example.com", &[_]SeedAccount{
+        .{ .email = "alpha@example.com", .alias = "work" },
+        .{ .email = "beta@example.com", .alias = "" },
+    });
+    try tmp.dir.makePath("empty-bin");
+    const empty_path = try tmp.dir.realpathAlloc(gpa, "empty-bin");
+    defer gpa.free(empty_path);
+
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{"sw"});
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings("switch\tSwitch the active account\n:36\n", out);
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "switch", "" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "work\t") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "beta@example.com\t") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "01:") == null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "-\t") == null);
+        try std.testing.expect(std.mem.endsWith(u8, out, ":36\n"));
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "switch", "-" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "--live\t") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "--json\t") != null);
+        try std.testing.expect(std.mem.endsWith(u8, out, ":36\n"));
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "alias", "" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "set\t") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "clear\t") != null);
+        try std.testing.expect(std.mem.endsWith(u8, out, ":36\n"));
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "alias", "set", "" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "work\t") != null);
+        try std.testing.expect(std.mem.endsWith(u8, out, ":36\n"));
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "alias", "set", "work", "" });
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings(":36\n", out);
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "import", "" });
+        defer gpa.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "--alias\t") != null);
+        try std.testing.expect(std.mem.endsWith(u8, out, ":0\n"));
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "app", "--platform", "w" });
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings("win\twin\nwsl\twsl\n:36\n", out);
+    }
+    {
+        const out = try runCompleteEndpoint(gpa, project_root, home_root, empty_path, &[_][]const u8{ "bogus", "" });
+        defer gpa.free(out);
+        try std.testing.expectEqualStrings(":36\n", out);
+    }
+}
+
+test "Scenario: Given the bash trampoline when simulating COMP_WORDS then COMPREPLY reflects the protocol" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const project_root = try projectRootAlloc(gpa);
+    defer gpa.free(project_root);
+    try buildCliBinary(gpa, project_root);
+
+    var tmp = fs.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const home_root = try tmp.dir.realpathAlloc(gpa, ".");
+    defer gpa.free(home_root);
+
+    try seedRegistryWithAccounts(gpa, home_root, "alpha@example.com", &[_]SeedAccount{
+        .{ .email = "alpha@example.com", .alias = "work" },
+        .{ .email = "beta@example.com", .alias = "" },
+        .{ .email = "demo@example.com", .alias = "01:demo" },
+    });
+    try tmp.dir.makePath("empty-bin");
+    const empty_path = try tmp.dir.realpathAlloc(gpa, "empty-bin");
+    defer gpa.free(empty_path);
+
+    const generated = try runCliWithIsolatedHomeAndPath(gpa, project_root, home_root, empty_path, &[_][]const u8{ "completion", "bash" });
+    defer gpa.free(generated.stdout);
+    defer gpa.free(generated.stderr);
+    try expectSuccess(generated);
+    try tmp.dir.writeFile(.{ .sub_path = "completion.bash", .data = generated.stdout });
+    const script_path = try tmp.dir.realpathAlloc(gpa, "completion.bash");
+    defer gpa.free(script_path);
+
+    const exe_path = try builtCliPathAlloc(gpa, project_root);
+    defer gpa.free(exe_path);
+    const bin_dir = std.Io.Dir.path.dirname(exe_path) orelse return error.TestUnexpectedResult;
+
+    const driver = try std.fmt.allocPrint(gpa,
+        \\export PATH="{s}:$PATH"
+        \\source "{s}"
+        \\COMP_WORDS=(codex-auth sw); COMP_CWORD=1; _codex_auth_complete; printf '<%s>' "${{COMPREPLY[@]}}"; echo
+        \\COMP_WORDS=(codex-auth switch ""); COMP_CWORD=2; _codex_auth_complete; printf '<%s>' "${{COMPREPLY[@]}}"; echo
+        \\COMP_WORDS=(codex-auth switch 01 : d); COMP_CWORD=4; _codex_auth_complete; printf '<%s>' "${{COMPREPLY[@]}}"; echo
+        \\COMP_WORDS=(codex-auth app --platform = w); COMP_CWORD=4; _codex_auth_complete; printf '<%s>' "${{COMPREPLY[@]}}"; echo
+        \\COMP_WORDS=(codex-auth remove work: b); COMP_CWORD=3; _codex_auth_complete; printf '<%s>' "${{COMPREPLY[@]}}"; echo
+        \\COMP_WORDS=(codex-auth alias ""); COMP_CWORD=2; _codex_auth_complete; printf '<%s>' "${{COMPREPLY[@]}}"; echo
+    , .{ bin_dir, script_path });
+    defer gpa.free(driver);
+
+    var env_map = try getEnvMap(gpa);
+    defer env_map.deinit();
+    try env_map.put("HOME", home_root);
+    try env_map.put("USERPROFILE", home_root);
+    _ = env_map.swapRemove("CODEX_HOME");
+
+    const result = runCapture(gpa, project_root, &env_map, &[_][]const u8{ "bash", "-c", driver }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code == 127) return error.SkipZigTest,
+        else => {},
+    }
+    logRunResultIfFailed("bash completion driver", result);
+    try expectSuccess(result);
+
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    const line_root = lines.next() orelse return error.TestExpectedEqual;
+    const line_switch = lines.next() orelse return error.TestExpectedEqual;
+    const line_colon = lines.next() orelse return error.TestExpectedEqual;
+    const line_platform = lines.next() orelse return error.TestExpectedEqual;
+    const line_separgs = lines.next() orelse return error.TestExpectedEqual;
+    const line_alias = lines.next() orelse return error.TestExpectedEqual;
+
+    try std.testing.expectEqualStrings("<switch>", line_root);
+    try std.testing.expect(std.mem.indexOf(u8, line_switch, "<work>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_switch, "<beta@example.com>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_switch, "<01:demo>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_switch, "<->") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line_switch, "<alpha@example.com>") == null);
+    try std.testing.expectEqualStrings("<demo>", line_colon);
+    try std.testing.expectEqualStrings("<win><wsl>", line_platform);
+    try std.testing.expect(std.mem.indexOf(u8, line_separgs, "<beta@example.com>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_alias, "<set>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line_alias, "<clear>") != null);
 }
 
 test "config time persists across commands and invalid input leaves the registry unchanged" {

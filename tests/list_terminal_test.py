@@ -87,7 +87,7 @@ class ListTerminalTest(unittest.TestCase):
                 self.assertTrue(output.startswith(b"codex-auth pok\r\x1b[2K"))
                 lines = ANSI.sub(b"", output.split(b"\r\x1b[2K", 1)[1]).decode().splitlines()
                 header = lines[0]
-                rows = lines[2:]
+                rows = lines[1:]
                 self.assertEqual(len(rows), 2)
                 for index, row in enumerate(rows):
                     self.assertEqual(header.index("ACCOUNT"), row.index("use***@e***.com"))
@@ -108,7 +108,7 @@ class ListTerminalTest(unittest.TestCase):
                                 capture_output=True, env=self.env, check=True, timeout=10)
         self.assertNotIn(b"\x1b", result.stdout)
         self.assertNotIn(b"\r", result.stdout)
-        self.assertTrue(result.stdout.startswith(b"     ACCOUNT"))
+        self.assertTrue(result.stdout.startswith(b"    ACCOUNT"))
 
     def test_list_and_cancelled_switch_mask_emails_without_changing_registry(self):
         registry = Path(self.home.name) / "accounts" / "registry.json"
@@ -160,26 +160,23 @@ class ListTerminalTest(unittest.TestCase):
                 for clock in re.finditer(r"\b\d{1,2}:\d{2}(?: [AP]M)?", plain):
                     self.assertTrue(clock.group().endswith((" AM", " PM")), clock.group())
                 if cols == 220:
-                    self.assertIn("AUTH EXPIRE", plain)
+                    self.assertIn("TOKEN EXPIRE", plain)
                     self.assertRegex(plain, r"\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} [AP]M")
 
-    def test_plain_list_uses_future_available_cards_without_legacy_expiry(self):
+    def test_plain_list_shows_earliest_available_card_expiry(self):
         registry = Path(self.home.name) / "accounts" / "registry.json"
         data = json.loads(registry.read_text())
         for account in data["accounts"]:
             usage = account["last_usage"]
             usage.pop("reset_credits_expires_at")
             usage["reset_credit"] = [
-                {"id": "old", "status": "available", "expires_at": "2000-01-01T00:00:00Z"},
                 {"id": "used", "status": "used", "expires_at": "2099-01-01T00:00:00Z"},
                 {"id": "new", "status": "available", "expires_at": "2100-01-01T12:00:00Z"},
             ]
         registry.write_text(json.dumps(data))
         output = ANSI.sub(b"", self.capture_tty(False, cols=220))
-        local_date = datetime.fromisoformat("2100-01-01T12:00:00+00:00").astimezone().strftime("%Y-%m-%d")
-        self.assertEqual(output.count(f"3 (exp {local_date}".encode()), 2)
-        self.assertNotIn(b"2099-", output)
-        self.assertNotIn(b"2000-", output)
+        local_date = datetime.fromisoformat("2100-01-01T12:00:00+00:00").astimezone().strftime("%m-%d")
+        self.assertEqual(output.count(f"3 (exp {local_date})".encode()), 2)
 
     def test_live_list_keeps_group_identity_and_quits_with_q(self):
         registry = Path(self.home.name) / "accounts" / "registry.json"

@@ -23,40 +23,17 @@ Windows Terminal, `cmd.exe`, and CI logs stay readable.
   arrows, or box-drawing characters in Windows default output.
 - Unicode may be used for non-Windows output when it is already part of an
   established command style.
+- In-flight steps are announced with a `- ` prefix and a completed step with an
+  `OK ` prefix instead of a check mark.
 
-Recommended Windows status markers:
+### Reset credits rail and `reset` output
 
-```text
-Codex App is already running, launch skipped.
-- Checking latest https://github.com/Loongphy/codext release...
-  Downloading Codext CLI for WSL (v0.3.0)
-OK Downloaded Codext CLI for WSL (v0.3.0)
-```
-
-### App command examples
-
-Already running:
-
-```text
-Codex App is already running, launch skipped.
-```
-
-Launch with a managed CLI download:
-
-```text
-- Checking latest https://github.com/Loongphy/codext release...
-  Downloading Codext CLI for WSL (v0.3.0)
-  https://github.com/Loongphy/codext/releases/download/.../codext-linux-x64.tar.gz
-OK Downloaded Codext CLI for WSL (v0.3.0)
-
-- Environment Configuration ------------------------------------------------
-  Platform: WSL (auto-detected)
-  Codex Home: C:\Users\Loong\.codext (explicit)
-  App ID: Loongphy.Codext (explicit)
-  CLI Path: C:\Users\Loong\.codext\accounts\codext-cli\codex-linux-x64 (downloaded)
-----------------------------------------------------------------------------
-Launching Codex App...
-```
+The `list --live` reset credits rail is borderless on every platform; Windows
+only changes the shared glyph set: the `·` field separator becomes `, `, a
+success status marker becomes `OK `, and a failure line carries no marker at
+all because its sentence already says what happened. `codex-auth reset` prints
+the same separator difference outside the TUI. The exact rendering of both is
+pinned by tests (`tests/cli_picker_test.zig`, `tests/cli_behavior_test.zig`).
 
 ## System proxy
 
@@ -83,3 +60,13 @@ The same translation applies to the Codext release lookup and download in
 `codex-auth app`.
 
 See [api.md](./api.md) for the full resolution order.
+
+## Test runner deadlock
+
+Zig's server-mode test runner (`--listen=-`, `std.zig.Server` over stdio)
+can deadlock the build runner on Windows: the spawned `test.exe` waits on
+stdin forever while the runner prints nothing, so CI appears stuck right
+after `zig version`. `zig build test` therefore runs test binaries through
+plain `Step.Run` steps (exit code verdict) rather than `addRunArtifact`. See
+[tests.md](./tests.md#why-tests-use-plain-steprun-instead-of-addrunartifact)
+before touching the run-test wiring in `build.zig`.

@@ -13,19 +13,16 @@ const redact = @import("../core/redact.zig");
 
 const UsageError = types.UsageError;
 
-pub fn printCodexDaemonDiagnostic(home: []const u8, executable: []const u8, outcome: daemon.Outcome, requested: bool) !void {
+pub fn printCodexDaemonDiagnostic(home: []const u8, executable: []const u8, outcome: daemon.Outcome) !void {
     var stderr: io_util.Stderr = undefined;
     stderr.init();
-    try writeCodexDaemonDiagnosticTo(stderr.out(), home, executable, outcome, requested);
+    try writeCodexDaemonDiagnosticTo(stderr.out(), home, executable, outcome);
     try stderr.out().flush();
 }
 
-pub fn writeCodexDaemonDiagnosticTo(out: *std.Io.Writer, home: []const u8, executable: []const u8, outcome: daemon.Outcome, requested: bool) !void {
+pub fn writeCodexDaemonDiagnosticTo(out: *std.Io.Writer, home: []const u8, executable: []const u8, outcome: daemon.Outcome) !void {
     switch (outcome) {
-        .not_running => {
-            if (requested) try out.writeAll("Account files switched successfully; no running Codex daemon was found, so no restart was attempted.\n");
-            return;
-        },
+        .not_running => return,
         .restarted => {
             try out.writeAll("Account files switched successfully; Codex daemon restart completed. Reconnect and verify the selected account.\n");
             return;
@@ -35,18 +32,15 @@ pub fn writeCodexDaemonDiagnosticTo(out: *std.Io.Writer, home: []const u8, execu
             return;
         },
         .deferred => {
-            try out.writeAll("Account files switched successfully; the daemon deferred the reload until the running turn finishes. Rerun `switch --restart-daemon` afterwards.\n");
+            try out.writeAll("Account files switched successfully; the daemon deferred the reload until the running turn finishes. Rerun the switch afterwards.\n");
             return;
         },
-        .running => try out.writeAll("A running Codex daemon may still use cached credentials. Use `switch --restart-daemon` to apply the selection or repair stale authentication. Restarting can interrupt attached sessions.\n"),
-        .unknown => try out.writeAll(if (requested)
-            "Account files switched successfully; daemon responsiveness could not be confirmed. The requested restart was not attempted.\n"
-        else
-            "Account files switched successfully; daemon responsiveness could not be confirmed. Its account state is unconfirmed.\n"),
-        .restart_failed => try out.writeAll("Account files switched successfully; requested daemon restart failed. The daemon may be stopping or starting; its account state is unconfirmed.\n"),
+        .running => try out.writeAll("Account files switched successfully; a running Codex daemon may still use cached credentials.\n"),
+        .unknown => try out.writeAll("Account files switched successfully; daemon responsiveness could not be confirmed. Its account state is unconfirmed.\n"),
+        .reload_failed => try out.writeAll("Account files switched successfully; the running daemon reported an auth reload failure. Its account state is unconfirmed.\n"),
+        .restart_failed => try out.writeAll("Account files switched successfully; the daemon restart failed. The daemon may be stopping or starting; its account state is unconfirmed.\n"),
         .timed_out => try out.writeAll("Account files switched successfully; daemon restart did not complete within 120 seconds. The daemon may still be stopping or starting; its account state is unconfirmed.\n"),
         .unsupported => {
-            if (!requested) return;
             try out.writeAll("Account files switched successfully; automatic daemon coordination is unsupported on this platform. Check which lifecycle commands your Codex installation supports.\n");
         },
     }
@@ -58,9 +52,9 @@ pub fn writeCodexDaemonDiagnosticTo(out: *std.Io.Writer, home: []const u8, execu
 }
 
 fn writeDaemonCommandTo(out: *std.Io.Writer, home: []const u8, executable: []const u8, command: []const u8) !void {
-    try out.writeAll(if (builtin.os.tag == .windows) "$env:CODEX_HOME = " else "CODEX_HOME=");
+    try out.writeAll(if (builtin.target.os.tag == .windows) "$env:CODEX_HOME = " else "CODEX_HOME=");
     try writeShellArgumentTo(out, home);
-    try out.writeAll(if (builtin.os.tag == .windows) "; & " else " ");
+    try out.writeAll(if (builtin.target.os.tag == .windows) "; & " else " ");
     try writeShellArgumentTo(out, executable);
     try out.print(" app-server daemon {s}", .{command});
 }
@@ -70,7 +64,7 @@ fn writeShellArgumentTo(out: *std.Io.Writer, arg: []const u8) !void {
     var parts = std.mem.splitScalar(u8, arg, '\'');
     try out.writeAll(parts.first());
     while (parts.next()) |part| {
-        try out.writeAll(if (builtin.os.tag == .windows) "''" else "'\\''");
+        try out.writeAll(if (builtin.target.os.tag == .windows) "''" else "'\\''");
         try out.writeAll(part);
     }
     try out.writeAll("'");
@@ -423,6 +417,65 @@ pub fn printAliasCleared(rec: *const registry.AccountRecord, old_alias: []const 
     try out.flush();
 }
 
+/// Prints a `reset` command failure to stderr with the standard error prefix.
+pub fn printResetError(comptime fmt: []const u8, args: anytype) !void {
+    var stderr: io_util.Stderr = undefined;
+    stderr.init();
+    const out = stderr.out();
+    const use_color = stderr.color_enabled;
+    try writeErrorPrefixTo(out, use_color);
+    try out.writeAll(" ");
+    try out.print(fmt, args);
+    try out.writeAll("\n");
+    try out.flush();
+}
+
+/// The one-line summary `reset` prints after a consume: that a credit was
+/// redeemed, how many are left, and when the next one expires. The redeemed
+/// card is not named; `list --json` and the stored snapshot keep that detail.
+/// The wording matches the live rail's status line. Takes the platform
+/// explicitly so tests and the dev preview can render both variants.
+pub fn resetSummaryLineAlloc(
+    allocator: std.mem.Allocator,
+    already_used: bool,
+    remaining: usize,
+    next_expiry: ?[]const u8,
+    is_windows: bool,
+) ![]u8 {
+    const separator = style.Glyphs.forPlatform(is_windows).separator;
+    var line: std.Io.Writer.Allocating = .init(allocator);
+    errdefer line.deinit();
+    try line.writer.writeAll(if (already_used) "reset credit already redeemed" else "reset credit redeemed");
+    if (remaining == 0) {
+        try line.writer.print("{s}none left", .{separator});
+    } else {
+        try line.writer.print("{s}{d} left", .{ separator, remaining });
+        if (next_expiry) |expiry| {
+            try line.writer.print(" (next exp {s})", .{expiry});
+        } else {
+            try line.writer.writeAll(" (no expiry)");
+        }
+    }
+    return line.toOwnedSlice();
+}
+
+/// Prints the `reset` summary line. `next_expiry` is the compact local
+/// `MM-DD HH:MM` of the soonest-expiring remaining card, or null when that card
+/// carries no expiry.
+pub fn printResetSummary(
+    allocator: std.mem.Allocator,
+    already_used: bool,
+    remaining: usize,
+    next_expiry: ?[]const u8,
+) !void {
+    const line = try resetSummaryLineAlloc(allocator, already_used, remaining, next_expiry, builtin.target.os.tag == .windows);
+    defer allocator.free(line);
+    var stdout: io_util.Stdout = undefined;
+    stdout.init();
+    try stdout.out().print("{s}\n", .{line});
+    try stdout.out().flush();
+}
+
 pub fn printInvalidRemoveSelectionError() !void {
     var stderr: io_util.Stderr = undefined;
     stderr.init();
@@ -459,7 +512,7 @@ pub fn buildRemoveLabels(
         const label = if (row.depth == 0 or current_header == null) blk: {
             const rec = &reg.accounts.items[row.account_index.?];
             break :blk try display_rows.buildAccountIdentityLabelAlloc(allocator, rec);
-        } else try std.fmt.allocPrint(allocator, "{s} / {s}", .{ current_header.?, row.account_cell });
+        } else try allocator.print("{s} / {s}", .{ current_header.?, row.account_cell });
         try labels.append(allocator, label);
     }
     return labels;

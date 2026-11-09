@@ -1,4 +1,6 @@
 const std = @import("std");
+const app_runtime = @import("../core/runtime.zig");
+const transport = @import("../api/transport.zig");
 const cli = @import("../cli/root.zig");
 const registry = @import("../registry/root.zig");
 const account_names = @import("account_names.zig");
@@ -8,6 +10,7 @@ const preflight = @import("preflight.zig");
 const live_flow = @import("live.zig");
 const help_workflow = @import("help.zig");
 const clean_workflow = @import("clean.zig");
+const completion_workflow = @import("completion.zig");
 const config_workflow = @import("config.zig");
 const app_workflow = @import("app.zig");
 const list_workflow = @import("list.zig");
@@ -16,6 +19,7 @@ const import_workflow = @import("import.zig");
 const export_workflow = @import("export.zig");
 const switch_workflow = @import("switch.zig");
 const remove_workflow = @import("remove.zig");
+const reset_workflow = @import("reset.zig");
 const alias_workflow = @import("alias.zig");
 const workflow_env = @import("env.zig");
 const targets = @import("targets.zig");
@@ -31,7 +35,6 @@ pub const liveTtyPreflightError = targets.liveTtyPreflightError;
 pub const shouldRefreshForegroundUsage = targets.shouldRefreshForegroundUsage;
 pub const ForegroundUsageOutcome = usage_refresh.ForegroundUsageOutcome;
 pub const ForegroundUsageRefreshState = usage_refresh.ForegroundUsageRefreshState;
-pub const max_usage_override_display_width = usage_refresh.max_usage_override_display_width;
 pub const formatStatusOverrideAlloc = usage_refresh.formatStatusOverrideAlloc;
 pub const refreshForegroundUsageForDisplayWithApiFetcher = usage_refresh.refreshForegroundUsageForDisplayWithApiFetcher;
 pub const refreshForegroundUsageForDisplay = usage_refresh.refreshForegroundUsageForDisplay;
@@ -64,28 +67,20 @@ pub const loadInitialLiveSelectionDisplay = live_flow.loadInitialLiveSelectionDi
 pub const switchLiveRuntimeApplySelection = live_flow.switchLiveRuntimeApplySelection;
 pub const removeLiveRuntimeApplySelection = live_flow.removeLiveRuntimeApplySelection;
 
-pub fn main(init: std.process.Init.Minimal) !void {
-    var exit_code: u8 = 0;
+pub fn main(init: std.process.Init) !u8 {
+    app_runtime.initRuntime(init);
+    defer app_runtime.deinitRuntime();
     runMain(init) catch |err| {
-        if (err == error.InvalidCliUsage) {
-            exit_code = 2;
-        } else if (isHandledCliError(err)) {
-            exit_code = 1;
-        } else {
-            return err;
-        }
+        if (err == error.InvalidCliUsage) return 2;
+        if (isHandledCliError(err)) return 1;
+        return err;
     };
-    if (exit_code != 0) std.process.exit(exit_code);
+    return 0;
 }
 
-fn runMain(init: std.process.Init.Minimal) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer std.debug.assert(gpa.deinit() == .ok);
-    const allocator = gpa.allocator();
-
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const args = try init.args.toSlice(arena_state.allocator());
+fn runMain(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     var parsed = try cli.commands.parseArgs(allocator, args);
     defer cli.commands.freeParseResult(allocator, &parsed);
@@ -105,11 +100,15 @@ fn runMain(init: std.process.Init.Minimal) !void {
     const needs_codex_home = switch (cmd) {
         .version => false,
         .help => false,
+        .completion => false,
+        .complete_request => false,
         else => true,
     };
     const json_requested = commandWantsJson(&cmd);
     const codex_home = if (needs_codex_home)
         registry.resolveCodexHome(allocator) catch |err| return printJsonStartupError(err, json_requested)
+    else if (cmd == .complete_request)
+        registry.resolveCodexHome(allocator) catch null
     else
         null;
     defer if (codex_home) |path| allocator.free(path);
@@ -122,14 +121,17 @@ fn runMain(init: std.process.Init.Minimal) !void {
         },
         .config => |opts| try config_workflow.handleConfig(allocator, codex_home.?, opts),
         .app => |opts| try app_workflow.handleApp(allocator, codex_home.?, opts),
-        .list => |opts| try list_workflow.handleList(allocator, codex_home.?, opts),
+        .list => |opts| try list_workflow.handleList(allocator, transport.Transport.curl(), codex_home.?, opts),
         .login => |opts| try login_workflow.handleLogin(allocator, codex_home.?, opts),
         .import_auth => |opts| try import_workflow.handleImport(allocator, codex_home.?, opts),
         .export_auth => |opts| try export_workflow.handleExport(allocator, codex_home.?, opts),
         .switch_account => |opts| try switch_workflow.handleSwitch(allocator, codex_home.?, opts),
         .remove_account => |opts| try remove_workflow.handleRemove(allocator, codex_home.?, opts),
+        .reset_credits => |opts| try reset_workflow.handleReset(allocator, transport.Transport.curl(), codex_home.?, opts),
         .alias => |opts| try alias_workflow.handleAlias(allocator, codex_home.?, opts),
         .clean => |opts| try clean_workflow.handleClean(allocator, codex_home.?, opts),
+        .completion => |opts| try completion_workflow.handleCompletion(opts),
+        .complete_request => |opts| try completion_workflow.handleCompleteRequest(allocator, codex_home, opts),
     }
 }
 

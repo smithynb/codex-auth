@@ -1,7 +1,10 @@
 const std = @import("std");
 const app_runtime = @import("codex_auth").core.runtime;
 const registry = @import("codex_auth").registry;
+const http_api = @import("codex_auth").api.http;
+const reset_credits_api = @import("codex_auth").api.reset_credits;
 const usage_api = @import("codex_auth").api.usage;
+const fixtures = @import("support/fixtures.zig");
 
 test "reset credit expiry selects earliest available unexpired credit" {
     const body =
@@ -33,9 +36,9 @@ test "usage snapshot cloning and equality retain reset credit expiry" {
     const cloned = try registry.cloneRateLimitSnapshot(std.testing.allocator, snapshot);
     defer registry.freeRateLimitSnapshot(std.testing.allocator, &cloned);
     try std.testing.expectEqual(snapshot.reset_credits_expires_at, cloned.reset_credits_expires_at);
-    try std.testing.expect(registry.rateLimitSnapshotEqual(snapshot, cloned));
+    try std.testing.expect(registry.rateLimitSnapshotsEqual(snapshot, cloned));
     snapshot.reset_credits_expires_at = 1791150772;
-    try std.testing.expect(!registry.rateLimitSnapshotEqual(snapshot, cloned));
+    try std.testing.expect(!registry.rateLimitSnapshotsEqual(snapshot, cloned));
 }
 
 test "parse usage api response maps live usage windows and plan" {
@@ -298,4 +301,123 @@ test "parse 402 usage error response uses detail code as error code fallback" {
 
     const code = usage_api.parseNonSuccessErrorCode(std.testing.allocator, 402, body) orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("deactivated_workspace", code.text());
+}
+
+test "consume outcome maps the backend code field" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.reset,
+        reset_credits_api.parseConsumeOutcome(gpa, "{\"code\":\"reset\",\"windows_reset\":2}"),
+    );
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.already_redeemed,
+        reset_credits_api.parseConsumeOutcome(gpa, "{\"code\":\"already_redeemed\",\"windows_reset\":1}"),
+    );
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.nothing_to_reset,
+        reset_credits_api.parseConsumeOutcome(gpa, "{\"code\":\"nothing_to_reset\"}"),
+    );
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.no_credit,
+        reset_credits_api.parseConsumeOutcome(gpa, "{\"code\":\"no_credit\"}"),
+    );
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.unexpected_response,
+        reset_credits_api.parseConsumeOutcome(gpa, "{\"code\":\"reset_all\"}"),
+    );
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.unexpected_response,
+        reset_credits_api.parseConsumeOutcome(gpa, "{}"),
+    );
+    try std.testing.expectEqual(
+        reset_credits_api.ConsumeOutcome.unexpected_response,
+        reset_credits_api.parseConsumeOutcome(gpa, "not json"),
+    );
+}
+
+test "consume body json-encodes the server-provided credit id" {
+    const gpa = std.testing.allocator;
+    const body = try reset_credits_api.buildConsumeBodyAlloc(
+        gpa,
+        "3f2b7c1e-0000-4000-8000-abcdef012345",
+        "credit\"1 \\ \u{7}\n",
+    );
+    defer gpa.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, body, .{});
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqualStrings(
+        "3f2b7c1e-0000-4000-8000-abcdef012345",
+        object.get("redeem_request_id").?.string,
+    );
+    try std.testing.expectEqualStrings("credit\"1 \\ \u{7}\n", object.get("credit_id").?.string);
+}
+
+test "idempotency key is a UUID v4" {
+    const key = try reset_credits_api.generateIdempotencyKeyAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(key);
+    try std.testing.expectEqual(@as(usize, 36), key.len);
+    for ([_]usize{ 8, 13, 18, 23 }) |index| {
+        try std.testing.expectEqual(@as(u8, '-'), key[index]);
+    }
+    try std.testing.expectEqual(@as(u8, '4'), key[14]);
+    try std.testing.expect(key[19] == '8' or key[19] == '9' or key[19] == 'a' or key[19] == 'b');
+    for (key, 0..) |ch, index| {
+        if (index == 8 or index == 13 or index == 18 or index == 23) continue;
+        try std.testing.expect((ch >= '0' and ch <= '9') or (ch >= 'a' and ch <= 'f'));
+    }
+}
+
+const batch_usage_body =
+    \\{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_at":4102444800}}}
+;
+
+/// Scripted batch transport: usage answers normally so the batch produces a
+/// snapshot, then the reset-credit request is canceled mid-refresh — the path
+/// that used to be swallowed as a best-effort success.
+fn cancelOnCreditsBatch(
+    allocator: std.mem.Allocator,
+    endpoint: []const u8,
+    requests: []const http_api.BatchRequest,
+    max_concurrency: usize,
+) anyerror!http_api.BatchHttpResult {
+    _ = max_concurrency;
+    if (std.mem.eql(u8, endpoint, usage_api.default_reset_credits_endpoint)) return error.Canceled;
+    const items = try allocator.alloc(http_api.BatchItemResult, requests.len);
+    errdefer allocator.free(items);
+    for (items) |*item| {
+        item.* = .{
+            .body = try allocator.dupe(u8, batch_usage_body),
+            .status_code = 200,
+            .outcome = .ok,
+        };
+    }
+    return .{ .items = items };
+}
+
+test "canceled reset-credit batch propagates instead of reporting a completed refresh" {
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const auth_json = try fixtures.authJsonWithEmailPlan(gpa, "user@example.com", "plus");
+    defer gpa.free(auth_json);
+    try tmp.dir.writeFile(app_runtime.io(), .{
+        .sub_path = "auth.json",
+        .data = auth_json,
+    });
+    const auth_path = try app_runtime.realPathFileAlloc(gpa, tmp.dir, "auth.json");
+    defer gpa.free(auth_path);
+
+    const paths = [_][]const u8{auth_path};
+    try std.testing.expectError(error.Canceled, usage_api.fetchUsageForAuthPathsDetailedBatchWithRunner(
+        gpa,
+        &paths,
+        4,
+        cancelOnCreditsBatch,
+    ));
 }

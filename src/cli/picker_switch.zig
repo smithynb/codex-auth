@@ -15,8 +15,8 @@ const buildSwitchRowsWithUsageOverrides = row_data.buildSwitchRowsWithUsageOverr
 const buildSwitchRowsFromIndicesWithUsageOverrides = row_data.buildSwitchRowsFromIndicesWithUsageOverrides;
 const filterErroredRowsFromSelectableIndices = row_data.filterErroredRowsFromSelectableIndices;
 const indexWidth = row_data.indexWidth;
-const renderSwitchScreen = render.renderSwitchScreen;
-const renderSwitchList = render.renderSwitchList;
+const renderSwitchScreenViewport = render.renderSwitchScreenViewport;
+const renderSwitchListViewport = render.renderSwitchListViewport;
 const TuiSession = tui_mod.TuiSession;
 const readTuiEscapeAction = tui_mod.readTuiEscapeAction;
 const tui_poll_error_mask = tui_mod.tui_poll_error_mask;
@@ -39,17 +39,13 @@ pub fn shouldUseNumberedSwitchSelector(is_windows: bool, stdin_is_tty: bool, std
     return !stdin_is_tty or !stdout_is_tty;
 }
 
-pub fn selectAccount(allocator: std.mem.Allocator, reg: *registry.Registry) !?[]const u8 {
-    return selectAccountWithUsageOverrides(allocator, reg, null);
-}
-
 pub fn selectAccountWithUsageOverrides(
     allocator: std.mem.Allocator,
     reg: *registry.Registry,
     usage_overrides: ?[]const ?[]const u8,
 ) !?[]const u8 {
     if (shouldUseNumberedSwitchSelector(
-        comptime builtin.os.tag == .windows,
+        comptime builtin.target.os.tag == .windows,
         std.Io.File.stdin().isTty(app_runtime.io()) catch false,
         std.Io.File.stdout().isTty(app_runtime.io()) catch false,
     )) {
@@ -61,10 +57,6 @@ pub fn selectAccountWithUsageOverrides(
     };
 }
 
-pub fn selectAccountFromIndices(allocator: std.mem.Allocator, reg: *registry.Registry, indices: []const usize) !?[]const u8 {
-    return selectAccountFromIndicesWithUsageOverrides(allocator, reg, indices, null);
-}
-
 pub fn selectAccountFromIndicesWithUsageOverrides(
     allocator: std.mem.Allocator,
     reg: *registry.Registry,
@@ -74,7 +66,7 @@ pub fn selectAccountFromIndicesWithUsageOverrides(
     if (indices.len == 0) return null;
     if (indices.len == 1) return reg.accounts.items[indices[0]].account_key;
     if (shouldUseNumberedSwitchSelector(
-        comptime builtin.os.tag == .windows,
+        comptime builtin.target.os.tag == .windows,
         std.Io.File.stdin().isTty(app_runtime.io()) catch false,
         std.Io.File.stdout().isTty(app_runtime.io()) catch false,
     )) {
@@ -102,12 +94,16 @@ pub fn selectWithNumbers(
     if (total_accounts == 0) return null;
     var styled_out = style.StyledWriter.init(out, stdout.color_enabled);
     const active_idx = activeSelectableIndex(&rows);
-    const idx_width = @max(@as(usize, 2), indexWidth(total_accounts));
+    const idx_width = indexWidth(total_accounts);
     const widths = rows.widths;
     const active_display_idx = if (active_idx) |idx| displayedIndexForSelectable(&rows, idx) else null;
 
+    const stdout_cols: ?usize = if (tui_mod.terminalSize(std.Io.File.stdout())) |size|
+        (if (size.cols != 0) size.cols else null)
+    else
+        null;
     try out.writeAll("Select account to activate:\n\n");
-    try renderSwitchList(&styled_out, reg, rows.items, idx_width, widths, active_display_idx);
+    try renderSwitchListViewport(&styled_out, reg, rows.items, idx_width, widths, active_display_idx, .{ .max_cols = stdout_cols });
     try out.writeAll("Select account number (or q to quit): ");
     try out.flush();
 
@@ -141,12 +137,16 @@ pub fn selectWithNumbersFromIndices(
     if (total_accounts == 0) return null;
     var styled_out = style.StyledWriter.init(out, stdout.color_enabled);
     const active_idx = activeSelectableIndex(&rows);
-    const idx_width = @max(@as(usize, 2), indexWidth(total_accounts));
+    const idx_width = indexWidth(total_accounts);
     const widths = rows.widths;
     const active_display_idx = if (active_idx) |idx| displayedIndexForSelectable(&rows, idx) else null;
 
+    const stdout_cols: ?usize = if (tui_mod.terminalSize(std.Io.File.stdout())) |size|
+        (if (size.cols != 0) size.cols else null)
+    else
+        null;
     try out.writeAll("Select account to activate:\n\n");
-    try renderSwitchList(&styled_out, reg, rows.items, idx_width, widths, active_display_idx);
+    try renderSwitchListViewport(&styled_out, reg, rows.items, idx_width, widths, active_display_idx, .{ .max_cols = stdout_cols });
     try out.writeAll("Select account number (or q to quit): ");
     try out.flush();
 
@@ -184,8 +184,9 @@ fn selectInteractiveFromIndices(
     var number_buf: [8]u8 = undefined;
     var number_len: usize = 0;
     const use_color = terminal_color.fileColorEnabled(tui.output);
-    const idx_width = @max(@as(usize, 2), indexWidth(total_accounts));
+    const idx_width = indexWidth(total_accounts);
     const widths = rows.widths;
+    var viewport_start: usize = 0;
 
     while (true) {
         const selected_display_idx = selectedDisplayIndexForRender(
@@ -193,23 +194,34 @@ fn selectInteractiveFromIndices(
             if (rows.selectable_row_indices.len != 0) idx else null,
             number_buf[0..number_len],
         );
+        // Fixed lines are the prompt, the column header, and the footer;
+        // the table viewport scrolls to keep the cursor inside the frame.
+        const frame_rows = tui.terminalRows();
+        const frame_cols = tui.terminalCols();
+        const max_rows = frame_rows -| 3;
+        viewport_start = render.liveViewportStartForDisplayIndex(rows.items, selected_display_idx, max_rows, viewport_start);
         try tui.resetFrame();
-        renderSwitchScreen(
-            out,
+        var styled_frame = style.StyledWriter.init(out, use_color);
+        renderSwitchScreenViewport(
+            &styled_frame,
             reg,
             rows.items,
             idx_width,
             widths,
             selected_display_idx,
-            use_color,
             "",
             "",
             number_buf[0..number_len],
+            .{
+                .start_row = viewport_start,
+                .max_rows = max_rows,
+                .max_cols = frame_cols,
+            },
         ) catch |err| return mapTuiOutputError(err);
         try tui.flushOutput();
 
-        if (comptime builtin.os.tag == .windows) {
-            switch (try tui.readWindowsKey()) {
+        if (comptime builtin.target.os.tag == .windows) {
+            switch (try tui.waitWindowsKey()) {
                 .move_up, .keyboard_up, .scroll_up, .page_up => {
                     if (rows.selectable_row_indices.len != 0 and idx > 0) {
                         idx -= 1;
@@ -280,7 +292,7 @@ fn selectInteractiveFromIndices(
         }
 
         var b: [8]u8 = undefined;
-        const n = try tui.read(&b);
+        const n = (try tui.readPickerBytes(&b, frame_rows, frame_cols)) orelse continue;
         var i: usize = 0;
         while (i < n) : (i += 1) {
             if (b[i] == 0x1b) {
@@ -294,25 +306,42 @@ fn selectInteractiveFromIndices(
                     .move_up, .keyboard_up, .scroll_up, .page_up => {
                         if (rows.selectable_row_indices.len != 0 and idx > 0) {
                             idx -= 1;
-                            number_len = 0;
                         }
+                        number_len = 0;
                     },
                     .home => {
                         if (rows.selectable_row_indices.len != 0) {
                             idx = 0;
-                            number_len = 0;
                         }
+                        number_len = 0;
                     },
                     .move_down, .keyboard_down, .scroll_down, .page_down => {
                         if (rows.selectable_row_indices.len != 0 and idx + 1 < rows.selectable_row_indices.len) {
                             idx += 1;
-                            number_len = 0;
                         }
+                        number_len = 0;
                     },
                     .end => {
                         if (rows.selectable_row_indices.len != 0) {
                             idx = rows.selectable_row_indices.len - 1;
-                            number_len = 0;
+                        }
+                        number_len = 0;
+                    },
+                    .enter => {
+                        if (parsedDisplayedIndex(number_buf[0..number_len], total_accounts)) |displayed_idx| {
+                            return accountIdForDisplayedAccount(&rows, reg, displayed_idx);
+                        }
+                        if (rows.selectable_row_indices.len == 0) return null;
+                        return accountIdForSelectable(&rows, reg, idx);
+                    },
+                    .backspace => {
+                        if (number_len > 0) {
+                            number_len -= 1;
+                            if (parsedDisplayedIndex(number_buf[0..number_len], total_accounts)) |displayed_idx| {
+                                if (selectableIndexForDisplayedAccount(&rows, displayed_idx)) |selectable_idx| {
+                                    idx = selectable_idx;
+                                }
+                            }
                         }
                     },
                     .quit => return null,
@@ -389,8 +418,9 @@ fn selectInteractive(
     var number_buf: [8]u8 = undefined;
     var number_len: usize = 0;
     const use_color = terminal_color.fileColorEnabled(tui.output);
-    const idx_width = @max(@as(usize, 2), indexWidth(total_accounts));
+    const idx_width = indexWidth(total_accounts);
     const widths = rows.widths;
+    var viewport_start: usize = 0;
 
     while (true) {
         const selected_display_idx = selectedDisplayIndexForRender(
@@ -398,23 +428,34 @@ fn selectInteractive(
             if (rows.selectable_row_indices.len != 0) idx else null,
             number_buf[0..number_len],
         );
+        // Fixed lines are the prompt, the column header, and the footer;
+        // the table viewport scrolls to keep the cursor inside the frame.
+        const frame_rows = tui.terminalRows();
+        const frame_cols = tui.terminalCols();
+        const max_rows = frame_rows -| 3;
+        viewport_start = render.liveViewportStartForDisplayIndex(rows.items, selected_display_idx, max_rows, viewport_start);
         try tui.resetFrame();
-        renderSwitchScreen(
-            out,
+        var styled_frame = style.StyledWriter.init(out, use_color);
+        renderSwitchScreenViewport(
+            &styled_frame,
             reg,
             rows.items,
             idx_width,
             widths,
             selected_display_idx,
-            use_color,
             "",
             "",
             number_buf[0..number_len],
+            .{
+                .start_row = viewport_start,
+                .max_rows = max_rows,
+                .max_cols = frame_cols,
+            },
         ) catch |err| return mapTuiOutputError(err);
         try tui.flushOutput();
 
-        if (comptime builtin.os.tag == .windows) {
-            switch (try tui.readWindowsKey()) {
+        if (comptime builtin.target.os.tag == .windows) {
+            switch (try tui.waitWindowsKey()) {
                 .move_up, .keyboard_up, .scroll_up, .page_up => {
                     if (rows.selectable_row_indices.len != 0 and idx > 0) {
                         idx -= 1;
@@ -485,7 +526,7 @@ fn selectInteractive(
         }
 
         var b: [8]u8 = undefined;
-        const n = try tui.read(&b);
+        const n = (try tui.readPickerBytes(&b, frame_rows, frame_cols)) orelse continue;
         var i: usize = 0;
         while (i < n) : (i += 1) {
             if (b[i] == 0x1b) {
@@ -499,25 +540,42 @@ fn selectInteractive(
                     .move_up, .keyboard_up, .scroll_up, .page_up => {
                         if (rows.selectable_row_indices.len != 0 and idx > 0) {
                             idx -= 1;
-                            number_len = 0;
                         }
+                        number_len = 0;
                     },
                     .home => {
                         if (rows.selectable_row_indices.len != 0) {
                             idx = 0;
-                            number_len = 0;
                         }
+                        number_len = 0;
                     },
                     .move_down, .keyboard_down, .scroll_down, .page_down => {
                         if (rows.selectable_row_indices.len != 0 and idx + 1 < rows.selectable_row_indices.len) {
                             idx += 1;
-                            number_len = 0;
                         }
+                        number_len = 0;
                     },
                     .end => {
                         if (rows.selectable_row_indices.len != 0) {
                             idx = rows.selectable_row_indices.len - 1;
-                            number_len = 0;
+                        }
+                        number_len = 0;
+                    },
+                    .enter => {
+                        if (parsedDisplayedIndex(number_buf[0..number_len], total_accounts)) |displayed_idx| {
+                            return accountIdForDisplayedAccount(&rows, reg, displayed_idx);
+                        }
+                        if (rows.selectable_row_indices.len == 0) return null;
+                        return accountIdForSelectable(&rows, reg, idx);
+                    },
+                    .backspace => {
+                        if (number_len > 0) {
+                            number_len -= 1;
+                            if (parsedDisplayedIndex(number_buf[0..number_len], total_accounts)) |displayed_idx| {
+                                if (selectableIndexForDisplayedAccount(&rows, displayed_idx)) |selectable_idx| {
+                                    idx = selectable_idx;
+                                }
+                            }
                         }
                     },
                     .quit => return null,

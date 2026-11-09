@@ -21,6 +21,10 @@ Install with npm:
 npm install -g @loongphy/codex-auth
 ```
 
+Installed command:
+
+- `codex-auth`
+
 You can also run it without a global install:
 
 ```shell
@@ -67,6 +71,7 @@ Detailed command documentation lives in [docs/commands/README.md](./docs/command
 | [`codex-auth remove [--live] [--api\|--skip-api]`](./docs/commands/remove.md) | Remove accounts interactively |
 | [`codex-auth remove <query> [<query>...]`](./docs/commands/remove.md) | Remove accounts by selector |
 | [`codex-auth remove --all`](./docs/commands/remove.md) | Remove all stored accounts |
+| [`codex-auth reset <query>`](./docs/commands/reset.md) | Use the soonest-expiring reset credit for one account |
 | [`codex-auth alias set <query> <alias>`](./docs/commands/alias.md) | Set an alias for an account |
 | [`codex-auth alias clear <query>`](./docs/commands/alias.md) | Clear the alias for an account |
 
@@ -87,6 +92,41 @@ Detailed command documentation lives in [docs/commands/README.md](./docs/command
 |---------|-------------|
 | [`codex-auth config live --interval <seconds>`](./docs/commands/config.md) | Configure live TUI refresh interval |
 | [`codex-auth config time --format <12h\|24h>`](./docs/commands/config.md#time-format) | Choose 24-hour or AM/PM clock times |
+| [`codex-auth completion <bash\|zsh\|fish\|pwsh>`](./docs/commands/completion.md) | Print a shell completion script |
+
+## Shell Completion
+
+Install Fish completions with:
+
+```shell
+mkdir -p ~/.config/fish/completions
+codex-auth completion fish > ~/.config/fish/completions/codex-auth.fish
+source ~/.config/fish/completions/codex-auth.fish
+```
+
+Install Bash completions with:
+
+```shell
+mkdir -p ~/.local/share/bash-completion/completions
+codex-auth completion bash > ~/.local/share/bash-completion/completions/codex-auth
+```
+
+Install Zsh completions with (the directory must be in `fpath` before `compinit` runs):
+
+```shell
+mkdir -p ~/.zsh/completions
+codex-auth completion zsh > ~/.zsh/completions/_codex-auth
+echo 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc
+autoload -Uz compinit && compinit
+```
+
+Install PowerShell completions with:
+
+```powershell
+codex-auth completion pwsh >> $PROFILE
+```
+
+Tab cycles candidates inline by default on PowerShell 5.1 and 7+; for a menu picker, add `Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete` to your profile.
 
 ## Quick Examples
 
@@ -175,8 +215,6 @@ This project is provided as-is and use is at your own risk.
 2. **Local-only:** With per-command `--skip-api`, the tool scans local `~/.codex/sessions/*/rollout-*.jsonl` files for usage data and skips team name refresh API calls. This mode is safer, but it can be less accurate because recent Codex rollout files often contain `rate_limits: null`, so the latest local usage limit data may lag by several hours.
 
 **API Call Declaration:**
-By using the default API-backed refresh, this tool will send your ChatGPT access token to OpenAI's servers for usage limit and team name refresh. The exact endpoints are:
-- `GET https://chatgpt.com/backend-api/wham/usage`
-- `GET https://chatgpt.com/backend-api/accounts`
+By using the default API-backed refresh, this tool will send your ChatGPT access token to OpenAI's servers for usage limit, reset-credit, and team name refresh. Redeeming a reset credit with `codex-auth reset` (or from the `list --live` rail) additionally sends a consume request — the only state-mutating call this tool makes — and it is never sent during a refresh. See [docs/api.md](docs/api.md) for the exact endpoints.
 
 This behavior may be detected by OpenAI and could violate their terms of service, potentially leading to account suspension or other risks. The decision to use this feature and any resulting consequences are entirely yours.

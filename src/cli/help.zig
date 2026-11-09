@@ -45,11 +45,9 @@ pub fn writeHelp(
     try writeCommandDetail(out, use_color, "import --purge [<path>]");
     try writeCommandSummary(out, use_color, "export [<dir>] [--cpa]", "Export stored account auth files");
     try writeCommandSummary(out, use_color, "switch", "Switch the active account");
-    try writeCommandDetail(out, use_color, "switch -");
     try writeCommandDetail(out, use_color, "switch [--live] [--api|--skip-api]");
     try writeCommandDetail(out, use_color, "switch <alias|email|display-number|query>");
     try writeCommandDetail(out, use_color, "switch <query> --json");
-    try writeCommandDetail(out, use_color, "switch <query> --restart-daemon");
     try writeCommandSummary(out, use_color, "remove", "Remove one or more accounts");
     try writeCommandDetail(out, use_color, "remove [--live] [--api|--skip-api]");
     try writeCommandDetail(out, use_color, "remove <alias|email|display-number|query>...");
@@ -58,8 +56,10 @@ pub fn writeHelp(
     try writeCommandSummary(out, use_color, "alias", "Set or clear account aliases");
     try writeCommandDetail(out, use_color, "alias set <alias|email|display-number|query> <alias>");
     try writeCommandDetail(out, use_color, "alias clear <alias|email|display-number|query>");
+    try writeCommandSummary(out, use_color, "reset <alias|email|display-number|query>", "Use the soonest-expiring reset credit");
     try writeCommandSummary(out, use_color, "clean", "Delete backup and stale files under accounts/");
     try writeCommandDetail(out, use_color, "clean background");
+    try writeCommandSummary(out, use_color, "completion <bash|zsh|fish|pwsh>", "Print a shell completion script");
     try writeCommandSummary(out, use_color, "config", "Manage configuration");
     try writeCommandDetail(out, use_color, "config live --interval <seconds>");
     try writeCommandDetail(out, use_color, "config time --format <12h|24h>");
@@ -135,8 +135,10 @@ fn commandNameForTopic(topic: HelpTopic) []const u8 {
         .export_auth => "export",
         .switch_account => "switch",
         .remove_account => "remove",
+        .reset_credits => "reset",
         .alias => "alias",
         .clean => "clean",
+        .completion => "completion",
         .config => "config",
         .app => "app",
     };
@@ -151,8 +153,10 @@ fn commandDescriptionForTopic(topic: HelpTopic) []const u8 {
         .export_auth => "Export stored account auth files.",
         .switch_account => "Switch the active account by alias, email, display number, or partial query.",
         .remove_account => "Remove one or more accounts by alias, email, display number, or partial query.",
+        .reset_credits => "Use the available reset credit that expires first.",
         .alias => "Set or clear an account alias by alias, email, display number, or partial query.",
         .clean => "Delete backup and stale files under accounts/.",
+        .completion => "Generate shell completion scripts.",
         .config => "Manage live refresh and time format configuration.",
         .app => "Launch Codex App with CLI overrides.",
     };
@@ -160,21 +164,21 @@ fn commandDescriptionForTopic(topic: HelpTopic) []const u8 {
 
 fn commandHelpHasExamples(topic: HelpTopic) bool {
     return switch (topic) {
-        .import_auth, .export_auth, .switch_account, .remove_account, .alias, .config, .app => true,
+        .import_auth, .export_auth, .switch_account, .remove_account, .reset_credits, .alias, .completion, .config, .app => true,
         else => false,
     };
 }
 
 fn commandHelpHasOptions(topic: HelpTopic) bool {
     return switch (topic) {
-        .list, .login, .import_auth, .export_auth, .switch_account, .remove_account, .alias, .config, .app => true,
+        .list, .login, .import_auth, .export_auth, .switch_account, .remove_account, .reset_credits, .alias, .completion, .config, .app => true,
         else => false,
     };
 }
 
 fn commandHelpHasNotes(topic: HelpTopic) bool {
     return switch (topic) {
-        .switch_account, .alias => true,
+        .switch_account, .alias, .reset_credits => true,
         else => false,
     };
 }
@@ -193,7 +197,7 @@ fn writeUsageLines(out: *std.Io.Writer, topic: HelpTopic) !void {
     switch (topic) {
         .top_level => {
             try out.writeAll("  codex-auth <command>\n");
-            try out.writeAll("  codex-auth -\n");
+            try out.writeAll("  codex-auth - [--json] [--no-restart-daemon]\n");
             try out.writeAll("  codex-auth --help\n");
             try out.writeAll("  codex-auth help <command>\n");
         },
@@ -212,11 +216,10 @@ fn writeUsageLines(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth export --cpa [<dir>]\n");
         },
         .switch_account => {
-            try out.writeAll("  codex-auth switch -\n");
-            try out.writeAll("  codex-auth switch [--live] [--api|--skip-api]\n");
-            try out.writeAll("  codex-auth switch <alias|email|display-number|query>\n");
-            try out.writeAll("  codex-auth switch <query> --json\n");
-            try out.writeAll("  codex-auth switch [<query>|-] --restart-daemon\n");
+            try out.writeAll("  codex-auth - [--json] [--no-restart-daemon]\n");
+            try out.writeAll("  codex-auth switch [--live] [--api|--skip-api] [--no-restart-daemon]\n");
+            try out.writeAll("  codex-auth switch <alias|email|display-number|query> [--no-restart-daemon]\n");
+            try out.writeAll("  codex-auth switch <query> --json [--no-restart-daemon]\n");
         },
         .remove_account => {
             try out.writeAll("  codex-auth remove [--live] [--api|--skip-api]\n");
@@ -224,6 +227,7 @@ fn writeUsageLines(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth remove --all\n");
             try out.writeAll("  codex-auth remove (<selector>...|--all) --json\n");
         },
+        .reset_credits => try out.writeAll("  codex-auth reset <alias|email|display-number|query>\n"),
         .alias => {
             try out.writeAll("  codex-auth alias set <alias|email|display-number|query> <alias>\n");
             try out.writeAll("  codex-auth alias clear <alias|email|display-number|query>\n");
@@ -231,6 +235,12 @@ fn writeUsageLines(out: *std.Io.Writer, topic: HelpTopic) !void {
         .clean => {
             try out.writeAll("  codex-auth clean\n");
             try out.writeAll("  codex-auth clean background\n");
+        },
+        .completion => {
+            try out.writeAll("  codex-auth completion bash\n");
+            try out.writeAll("  codex-auth completion zsh\n");
+            try out.writeAll("  codex-auth completion fish\n");
+            try out.writeAll("  codex-auth completion pwsh\n");
         },
         .config => {
             try out.writeAll("  codex-auth config live --interval <seconds>\n");
@@ -251,8 +261,10 @@ pub fn helpCommandForTopic(topic: HelpTopic) []const u8 {
         .export_auth => "codex-auth export --help",
         .switch_account => "codex-auth switch --help",
         .remove_account => "codex-auth remove --help",
+        .reset_credits => "codex-auth reset --help",
         .alias => "codex-auth alias --help",
         .clean => "codex-auth clean --help",
+        .completion => "codex-auth completion --help",
         .config => "codex-auth config --help",
         .app => "codex-auth app --help",
     };
@@ -291,12 +303,13 @@ fn writeOptionLines(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  --api        Load usage and account data from APIs.\n");
             try out.writeAll("  --skip-api   Load usage and account data from local data only (may be inaccurate).\n");
             try out.writeAll("  --json       Emit one machine-readable JSON document for non-interactive switch.\n");
-            try out.writeAll("  --restart-daemon\n");
-            try out.writeAll("               Restart a responsive daemon after switching, including unchanged-file recovery.\n");
-            try out.writeAll("               Can interrupt attached sessions; cannot be combined with --live.\n");
+            try out.writeAll("  --no-restart-daemon\n");
+            try out.writeAll("               After switching, a responsive daemon normally reloads the credentials in\n");
+            try out.writeAll("               place or is restarted when it cannot; restarting can interrupt attached\n");
+            try out.writeAll("               sessions. This flag still attempts an in-place reload but never restarts,\n");
+            try out.writeAll("               and with this flag, daemon issues never change the exit code.\n");
             try out.writeAll("  <alias|email|display-number|query>\n");
             try out.writeAll("               Switch directly when the target resolves to one account.\n");
-            try out.writeAll("  -            Switch to the previous active account.\n");
         },
         .remove_account => {
             try out.writeAll("  --live       Open the live remove UI.\n");
@@ -307,11 +320,21 @@ fn writeOptionLines(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  <alias|email|display-number|query>...\n");
             try out.writeAll("               Remove one or more matching accounts.\n");
         },
+        .reset_credits => {
+            try out.writeAll("  <alias|email|display-number|query>\n");
+            try out.writeAll("                    Select one stored account with an available reset credit.\n");
+        },
         .alias => {
             try out.writeAll("  set <selector> <alias>\n");
             try out.writeAll("                    Set one stored account alias without remote refresh.\n");
             try out.writeAll("  clear <selector>\n");
             try out.writeAll("                    Remove one stored account alias without remote refresh.\n");
+        },
+        .completion => {
+            try out.writeAll("  bash   Print Bash completion commands to stdout.\n");
+            try out.writeAll("  zsh    Print Zsh completion commands to stdout.\n");
+            try out.writeAll("  fish   Print Fish completion commands to stdout.\n");
+            try out.writeAll("  pwsh   Print PowerShell completion commands to stdout.\n");
         },
         .config => {
             try out.writeAll("  live --interval <seconds>\n");
@@ -368,16 +391,18 @@ fn writeExampleLines(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth export --cpa /path/to/cpa-backup\n");
         },
         .switch_account => {
+            try out.writeAll("  codex-auth -\n");
             try out.writeAll("  codex-auth switch\n");
-            try out.writeAll("  codex-auth switch -\n");
             try out.writeAll("  codex-auth switch --live\n");
             try out.writeAll("  codex-auth switch --api\n");
             try out.writeAll("  codex-auth switch --skip-api\n");
             try out.writeAll("  codex-auth switch personal\n");
-            try out.writeAll("  codex-auth switch personal --restart-daemon\n");
             try out.writeAll("  codex-auth switch john@example.com\n");
             try out.writeAll("  codex-auth switch 02\n");
             try out.writeAll("  codex-auth switch work\n");
+        },
+        .reset_credits => {
+            try out.writeAll("  codex-auth reset user@example.com\n");
         },
         .remove_account => {
             try out.writeAll("  codex-auth remove\n");
@@ -399,6 +424,13 @@ fn writeExampleLines(out: *std.Io.Writer, topic: HelpTopic) !void {
             try out.writeAll("  codex-auth clean\n");
             try out.writeAll("  codex-auth clean background\n");
         },
+        .completion => {
+            try out.writeAll("  codex-auth completion bash > ~/.local/share/bash-completion/completions/codex-auth\n");
+            try out.writeAll("  codex-auth completion zsh > ~/.zsh/completions/_codex-auth\n");
+            try out.writeAll("  codex-auth completion fish > ~/.config/fish/completions/codex-auth.fish\n");
+            try out.writeAll("  source ~/.config/fish/completions/codex-auth.fish\n");
+            try out.writeAll("  codex-auth completion pwsh >> $PROFILE\n");
+        },
         .config => {
             try out.writeAll("  codex-auth config live --interval 60\n");
             try out.writeAll("  codex-auth config time --format 12h\n");
@@ -415,7 +447,11 @@ fn writeNotesSectionStyled(out: *std.Io.Writer, use_color: bool, topic: HelpTopi
     try out.writeAll("\n");
     switch (topic) {
         .switch_account => {
-            try out.writeAll("  Targets can be `-`, aliases, emails, display numbers, or partial queries.\n");
+            try out.writeAll("  Targets can be aliases, emails, display numbers, or partial queries.\n");
+        },
+        .reset_credits => {
+            try out.writeAll("  Consumes the available reset credit with the earliest expiry.\n");
+            try out.writeAll("  The stored snapshot is not rewritten; run `codex-auth list --api` to reconcile it.\n");
         },
         .alias => {
             try out.writeAll("  Alias targets can be aliases, emails, display numbers, or partial queries.\n");

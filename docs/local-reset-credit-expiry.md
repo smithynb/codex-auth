@@ -20,7 +20,4 @@ Cloning and snapshot equality include the field so expiry changes are saved even
 when the credit count remains unchanged.
 
 This is a local source/native-binary customization; reinstalling or upgrading the
-npm package can overwrite the installed native binary. The separate launcher
-customization that prompts for daemon recovery after switching remains intact.
-Confirmation uses native auth reload with restart fallback; see
-[switch recovery](commands/switch.md#applying-a-switch-to-a-running-daemon).
+npm package can overwrite the installed native binary.
