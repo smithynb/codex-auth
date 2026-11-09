@@ -3,12 +3,10 @@ const app_runtime = @import("../core/runtime.zig");
 const auth = @import("../auth/auth.zig");
 const chatgpt_http = @import("http.zig");
 const registry = @import("../registry/root.zig");
-const session = @import("../session.zig");
 const registry_parse = @import("../registry/parse.zig");
 
 pub const default_usage_endpoint = "https://chatgpt.com/backend-api/wham/usage";
 pub const default_reset_credits_endpoint = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
-pub const reset_credits_endpoint = default_reset_credits_endpoint;
 
 pub const UsageFetchResult = struct {
     snapshot: ?registry.RateLimitSnapshot,
@@ -255,10 +253,7 @@ pub fn fetchUsageForAuthPathsDetailedBatchWithRunner(
         const http_result = reset_credit_http_results.items[unique_idx];
         if (http_result.outcome != .ok or http_result.body.len == 0 or isNonSuccessStatus(http_result.status_code)) continue;
         const details = parseResetCreditResponse(allocator, http_result.body) catch null;
-        if (details) |value| {
-            results[result_idx].snapshot.?.reset_credit = value;
-            results[result_idx].snapshot.?.reset_credits_expires_at = earliestResetCreditExpiry(value, std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds());
-        }
+        if (details) |value| results[result_idx].snapshot.?.reset_credit = value;
     }
 
     return results;
@@ -288,7 +283,6 @@ pub fn fetchUsageForTokenDetailed(
             break :blk null;
         }) |details| {
             value.reset_credit = details;
-            value.reset_credits_expires_at = earliestResetCreditExpiry(details, std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds());
         }
     }
     return .{
@@ -399,51 +393,6 @@ pub fn parseUsageResponse(allocator: std.mem.Allocator, body: []const u8) !?regi
     }
 
     return snapshot;
-}
-
-fn earliestResetCreditExpiry(cards: []const registry.ResetCreditCard, now: i64) ?i64 {
-    var earliest: ?i64 = null;
-    for (cards) |card| {
-        if (!std.mem.eql(u8, card.status, "available")) continue;
-        const epoch = @import("../time/timestamp.zig").parseIso8601(card.expires_at orelse continue) orelse continue;
-        if (epoch <= now) continue;
-        if (earliest == null or epoch < earliest.?) earliest = epoch;
-    }
-    return earliest;
-}
-
-pub fn parseResetCreditExpiry(allocator: std.mem.Allocator, body: []const u8, now: i64) !?i64 {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
-    defer parsed.deinit();
-    const root = switch (parsed.value) {
-        .object => |obj| obj,
-        else => return null,
-    };
-    const credits = switch (root.get("credits") orelse return null) {
-        .array => |array| array,
-        else => return null,
-    };
-    var earliest: ?i64 = null;
-    for (credits.items) |credit| {
-        const obj = switch (credit) {
-            .object => |value| value,
-            else => continue,
-        };
-        const status = switch (obj.get("status") orelse continue) {
-            .string => |value| value,
-            else => continue,
-        };
-        if (!std.mem.eql(u8, status, "available")) continue;
-        const expires = switch (obj.get("expires_at") orelse continue) {
-            .string => |value| value,
-            else => continue,
-        };
-        const timestamp_ms = session.parseTimestampMs(expires) orelse continue;
-        const timestamp = @divTrunc(timestamp_ms, 1000);
-        if (timestamp <= now) continue;
-        if (earliest == null or timestamp < earliest.?) earliest = timestamp;
-    }
-    return earliest;
 }
 
 pub fn parseResetCreditResponse(allocator: std.mem.Allocator, body: []const u8) !?[]registry.ResetCreditCard {

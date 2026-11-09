@@ -197,8 +197,6 @@ fn writeUsage(jw: *std.json.Stringify, usage: *const results.UsageView) !void {
     try writeCredits(jw, usage.credits);
     try jw.objectField("reset_credits");
     try jw.write(usage.reset_credits);
-    try jw.objectField("reset_credits_expires_at");
-    try jw.write(usage.reset_credits_expires_at);
     try jw.objectField("reset_credit");
     try writeResetCreditList(jw, usage.reset_credit);
     try jw.objectField("refresh");

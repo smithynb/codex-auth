@@ -79,9 +79,7 @@ same switch document for the previous-account shortcut.
 }
 ```
 
-`reset_credits` remains the backward-compatible available-count field. This fork
-also retains `reset_credits_expires_at`, the earliest future expiry among
-available reset cards in Unix seconds, or `null` when unavailable.
+`reset_credits` remains the backward-compatible available-count field.
 `reset_credit`, when present, lists the available reset-credit cards with
 their `id`, `status`, `expires_at`, and `title`. The backend may cap the
 returned list, so treat it as non-exhaustive. All expiry timestamps in the

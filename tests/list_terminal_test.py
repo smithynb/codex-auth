@@ -41,7 +41,7 @@ class ListTerminalTest(unittest.TestCase):
                                 "resets_at": now + 18000},
                     "secondary": {"used_percent": 20 + index, "window_minutes": 10080,
                                   "resets_at": now + 604800},
-                    "reset_credits": 3, "reset_credits_expires_at": now + 172800,
+                    "reset_credits": 3,
                     "plan_type": plan,
                 },
             })
@@ -126,10 +126,9 @@ class ListTerminalTest(unittest.TestCase):
         self.assertEqual([a["email"] for a in before["accounts"]],
                          [a["email"] for a in after["accounts"]])
 
-    def test_save_and_json_keep_legacy_expiry_and_upstream_cards(self):
+    def test_time_format_save_and_json_keep_upstream_cards(self):
         registry = Path(self.home.name) / "accounts" / "registry.json"
         data = json.loads(registry.read_text())
-        expected = data["accounts"][0]["last_usage"]["reset_credits_expires_at"]
         cards = [{"id": "fixture-card", "status": "available",
                   "expires_at": "2100-01-01T00:00:00Z", "title": "Fixture"}]
         data["accounts"][0]["last_usage"]["reset_credit"] = cards
@@ -138,11 +137,10 @@ class ListTerminalTest(unittest.TestCase):
                        capture_output=True, env=self.env, check=True, timeout=10)
         saved = json.loads(registry.read_text())
         self.assertEqual(saved["time_format"], "12h")
-        self.assertEqual(saved["accounts"][0]["last_usage"]["reset_credits_expires_at"], expected)
         result = subprocess.run(["node", str(CLI), "list", "--skip-api", "--json"],
                                 capture_output=True, env=self.env, check=True, timeout=10)
         usage = json.loads(result.stdout)["accounts"][0]["usage"]
-        self.assertEqual(usage["reset_credits_expires_at"], expected)
+        self.assertNotIn("reset_credits_expires_at", usage)
         self.assertEqual(usage["reset_credit"], cards)
 
     def test_responsive_twelve_hour_output_keeps_complete_clocks(self):
@@ -168,7 +166,6 @@ class ListTerminalTest(unittest.TestCase):
         data = json.loads(registry.read_text())
         for account in data["accounts"]:
             usage = account["last_usage"]
-            usage.pop("reset_credits_expires_at")
             usage["reset_credit"] = [
                 {"id": "used", "status": "used", "expires_at": "2099-01-01T00:00:00Z"},
                 {"id": "new", "status": "available", "expires_at": "2100-01-01T12:00:00Z"},

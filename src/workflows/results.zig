@@ -57,7 +57,6 @@ pub const UsageView = struct {
     secondary: ?registry.RateLimitWindow = null,
     credits: ?CreditsView = null,
     reset_credits: ?i64 = null,
-    reset_credits_expires_at: ?i64 = null,
     reset_credit: ?[]registry.ResetCreditCard = null,
     refresh: UsageRefreshView,
 
@@ -303,7 +302,6 @@ fn buildUsageView(
         .secondary = snapshot.secondary,
         .credits = credits,
         .reset_credits = snapshot.reset_credits,
-        .reset_credits_expires_at = snapshot.reset_credits_expires_at,
         .reset_credit = if (snapshot.reset_credit) |cards| try registry.cloneResetCreditCards(allocator, cards) else null,
         .refresh = refresh,
     };

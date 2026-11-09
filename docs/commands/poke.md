@@ -62,7 +62,7 @@ This is a personal command. It requires the checkout launcher to be linked:
 ```shell
 cd /home/code/codex-auth
 npm install --ignore-scripts --package-lock=false
-zig build # Zig 0.16.0; rebuild after native source changes
+zig build # Zig 0.17.0; rebuild after native source changes
 ln -sfn /home/code/codex-auth/bin/codex-auth.js /root/.bun/bin/codex-auth
 ```
 
@@ -89,4 +89,4 @@ Run the isolated Zig tests as described in [docs/tests.md](../tests.md) when
 upstream or personal native code changes, then run `zig build` to rebuild.
 The launcher prefers `zig-out/bin/codex-auth` from the local build so native
 customizations stay active. Without that build, it falls back to the upstream
-npm platform binary (see [local reset-credit expiry](../local-reset-credit-expiry.md)).
+npm platform binary, which lacks the personal changes.
