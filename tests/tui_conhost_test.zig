@@ -755,7 +755,7 @@ test "console: live list renders on a real console and q exits" {
     }
 
     try waitBufferMarker(session.console, &session.buffer, "ACCOUNT", session.deadline_ms);
-    try waitBufferMarker(session.console, &session.buffer, "user00@example.com", session.deadline_ms);
+    try waitBufferMarker(session.console, &session.buffer, "u00(use***@e***.com)", session.deadline_ms);
     try session.console.inject(&.{keyRecord('q')});
 
     const code = session.child.waitAppExit(console_deadline_ms) catch |err| {
@@ -777,12 +777,12 @@ test "console: injected MOUSE_WHEELED records scroll the live list" {
         session.tmp.cleanup();
     }
 
-    try waitBufferMarker(session.console, &session.buffer, "user00@example.com", session.deadline_ms);
+    try waitBufferMarker(session.console, &session.buffer, "u00(use***@e***.com)", session.deadline_ms);
 
     // Pin non-vacuity: the tail row must NOT be visible before injection,
     // or the scroll assertion below could pass without any scrolling.
     try session.console.bufferText(&session.buffer);
-    try std.testing.expect(std.mem.indexOf(u8, session.buffer.items, "user39@example.com") == null);
+    try std.testing.expect(std.mem.indexOf(u8, session.buffer.items, "u39(use***@e***.com)") == null);
 
     // A dense burst of wheel-down records — one MOUSE_EVENT_RECORD per
     // notch, exactly what the console delivers for a flick — should scroll
@@ -791,7 +791,7 @@ test "console: injected MOUSE_WHEELED records scroll the live list" {
     for (&records) |*record| record.* = wheelRecord(-120);
     try session.console.inject(&records);
 
-    try waitBufferMarker(session.console, &session.buffer, "user39@example.com", session.deadline_ms);
+    try waitBufferMarker(session.console, &session.buffer, "u39(use***@e***.com)", session.deadline_ms);
     try session.console.inject(&.{keyRecord('q')});
 
     const code = session.child.waitAppExit(console_deadline_ms) catch |err| {
@@ -891,7 +891,7 @@ fn runShellHostedLeg(gpa: std.mem.Allocator, bin_dir: []const u8, shell: []const
     }
 
     try waitBufferMarker(session.console, &session.buffer, "ACCOUNT", session.deadline_ms);
-    try waitBufferMarker(session.console, &session.buffer, "user00@example.com", session.deadline_ms);
+    try waitBufferMarker(session.console, &session.buffer, "u00(use***@e***.com)", session.deadline_ms);
     try session.console.inject(&.{keyRecord('q')});
 
     const code = session.child.waitAppExit(console_deadline_ms) catch |err| {
