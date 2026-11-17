@@ -292,14 +292,19 @@ fn writeTruncated(out: *std.Io.Writer, text: []const u8, width: usize) !usize {
         try out.writeAll(".");
         return 1;
     }
-    try out.writeAll(text[0..text_width.prefixByteLength(text, width - 1)]);
+    // A prefix ending on a word boundary would render `word .`, which reads
+    // like a standalone dot cell; trim the gap so the marker hugs the text.
+    const prefix = std.mem.trimEnd(u8, text[0..text_width.prefixByteLength(text, width - 1)], " ");
+    try out.writeAll(prefix);
     try out.writeAll(".");
-    return width;
+    return text_width.displayWidth(prefix) + 1;
 }
 
-/// Usage cells read `N% (HH:MM on D Mon)`, `N% (HH:MM)` or a bare label such
-/// as `FileNotFound`. Narrow widths first drop the clock part
-/// (`N% (D Mon)`), then the parenthetical entirely (`N%`).
+/// Usage cells read `N% (HH:MM on D Mon)`, `N% (HH:MM)`, `N% (stale)` or a
+/// bare label such as `FileNotFound`. Narrow widths first drop the clock
+/// part (`N% (D Mon)`), then the parenthetical entirely (`N%`). A stale
+/// marker never sheds outright — it collapses to `N%!` — so aged data
+/// cannot pass for a live reading at narrow widths.
 fn writeUsageCell(out: *std.Io.Writer, text: []const u8, width: usize) !usize {
     const measured = text_width.displayWidth(text);
     if (measured <= width) {
@@ -322,7 +327,13 @@ fn writeUsageCell(out: *std.Io.Writer, text: []const u8, width: usize) !usize {
             }
         }
         const head_w = text_width.displayWidth(text[0..paren]);
-        if (head_w <= width) {
+        if (std.mem.eql(u8, text[paren..], " (stale)")) {
+            if (head_w + 1 <= width) {
+                try out.writeAll(text[0..paren]);
+                try out.writeAll("!");
+                return head_w + 1;
+            }
+        } else if (head_w <= width) {
             try out.writeAll(text[0..paren]);
             return head_w;
         }

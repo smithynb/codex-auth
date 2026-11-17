@@ -19,19 +19,25 @@ const ResetParts = struct {
 /// the TUI call sites on the same resolution without a second implementation.
 pub const resolveRateWindow = registry.resolveRateWindow;
 
+/// Display-facing usage cell. Only the last-measured remaining percent is
+/// shown: the "elapsed `resets_at` means refilled" inference in
+/// `registry.remainingPercentAt` exists for auto-switch scoring and must not
+/// turn a stale snapshot into a fake full quota. Without a real future
+/// `resets_at` (missing, `<= 0`, or already elapsed) the cell shows the
+/// measured percent plus a stale marker instead of a reset time.
 pub fn formatRateLimitFullAlloc(allocator: std.mem.Allocator, window: ?registry.RateLimitWindow) ![]u8 {
     return formatRateLimitFullWithFormatAlloc(allocator, window, .@"24h");
 }
 
 pub fn formatRateLimitFullWithFormatAlloc(allocator: std.mem.Allocator, window: ?registry.RateLimitWindow, time_format: clock.TimeFormat) ![]u8 {
-    if (window == null) return try allocator.print("-", .{});
-    if (window.?.resets_at == null) return try allocator.print("-", .{});
+    const remaining = registry.measuredRemainingPercent(window) orelse
+        return try allocator.print("-", .{});
     const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
-    const reset_at = window.?.resets_at.?;
-    if (now >= reset_at) {
-        return try allocator.print("100%", .{});
+    const reset_at = window.?.resets_at orelse
+        return allocator.print("{d}% (stale)", .{remaining});
+    if (reset_at <= 0 or now >= reset_at) {
+        return allocator.print("{d}% (stale)", .{remaining});
     }
-    const remaining = remainingPercent(window.?.used_percent);
     var parts = try resetPartsAlloc(allocator, reset_at, now, time_format);
     defer parts.deinit(allocator);
     if (parts.same_day) {
@@ -82,11 +88,4 @@ fn unknownResetPartsAlloc(allocator: std.mem.Allocator) !ResetParts {
     const time = try allocator.dupe(u8, "-");
     errdefer allocator.free(time);
     return .{ .time = time, .date = try allocator.dupe(u8, "-"), .same_day = true };
-}
-
-fn remainingPercent(used: f64) i64 {
-    const remaining = 100.0 - used;
-    if (remaining <= 0.0) return 0;
-    if (remaining >= 100.0) return 100;
-    return @as(i64, @intFromFloat(remaining));
 }

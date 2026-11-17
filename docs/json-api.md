@@ -31,6 +31,7 @@ codex-auth switch <query> --json
 codex-auth - --json
 codex-auth remove <selector> [<selector>...] --json
 codex-auth remove --all --json
+codex-auth reset <selector> [--credit <id>] --json
 ```
 
 Interactive and live paths are not supported. `codex-auth - --json` emits the
@@ -107,8 +108,15 @@ period end.
 | Input observed by the CLI | JSON plan |
 |---------------------------|-----------|
 | `team`, `self_serve_business_usage_based` | `business` |
-| `business`, `enterprise_cbp_usage_based`, `enterprise`, `hc` | `enterprise` |
+| `self_serve_business_prolite` | `business_premium` |
+| `business`, `ent26`, `enterprise_cbp_usage_based`, `enterprise`, `hc` | `enterprise` |
+| `enterprise_cbp_automation` | `enterprise_automation` |
 | `education`, `edu` | `edu` |
+| `edu_plus`, `edu_pro`, `sci`, `sci_plus`, `promax` | unchanged |
+
+The stored `plan` value (schema version 4+) keeps these same normalized
+tag names; only registries written before schema version 4 still carry
+raw backend identifiers and are normalized on load.
 
 The GUI must not repeat this mapping. When both auth and stored usage provide a
 plan, the usage plan wins.
@@ -127,6 +135,11 @@ plan, the usage plan wins.
 Snapshot fields remain present after refresh failure. `updated_at` is the
 stored snapshot update timestamp and may remain unchanged after an equal
 successful response.
+
+`used_percent` is the last-measured point value stored in the snapshot; it is
+not recomputed for display. Once `resets_at` has elapsed the snapshot is
+stale: the CLI's own usage cells mark such rows stale instead of assuming a
+refilled quota, and consumers decide their own display policy.
 
 `usage.refresh` describes only the current invocation:
 
@@ -180,6 +193,26 @@ accompany exit code 1 when the daemon restart fails.
   "new_active_account_key": null
 }
 ```
+
+### Reset
+
+```json
+{
+  "schema_version": 1,
+  "command": "reset",
+  "redeemed": {},
+  "outcome": "reset",
+  "remaining_credits": 1,
+  "next_expires_at": "2026-11-01T00:00:00Z"
+}
+```
+
+`redeemed` is the account object of the account the credit was redeemed for.
+`outcome` is `"reset"` or `"already_redeemed"`; both count as success.
+`remaining_credits` and `next_expires_at` describe the stored reset-credit
+card list after the consume: `next_expires_at` is the stored ISO 8601 expiry
+of the soonest-expiring card still available, or `null` when no dated card
+remains.
 
 ## Error Documents
 
@@ -240,10 +273,14 @@ Resolution status values are `resolved`, `ambiguous`, and `not_found`.
 
 | Error code | Meaning |
 |------------|---------|
-| `account_not_found` | Switch query has no match |
-| `ambiguous_query` | Switch query has multiple matches |
+| `account_not_found` | Switch query or reset selector has no match |
+| `ambiguous_query` | Switch query or reset selector has multiple matches |
 | `no_previous_account` | `codex-auth -` ran with no stored previous account |
 | `selector_resolution_failed` | Remove selector resolution failed atomically |
+| `no_reset_credit` | Account has no available reset credit, or the backend reports the credit spent |
+| `reset_credit_not_found` | `reset --credit` names no available reset-credit card |
+| `nothing_to_reset` | Backend reports the account's usage does not need a reset |
+| `reset_failed` | The reset-credit consume request failed |
 | `curl_unavailable` | Required API refresh cannot find curl |
 | `registry_error` | State failed before mutation began |
 | `state_uncertain` | Persistence failed after mutation began; run `list --json` before retrying |
