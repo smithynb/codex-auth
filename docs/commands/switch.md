@@ -22,7 +22,7 @@ codex-auth switch <query> --json [--no-restart-daemon]
 
 `codex-auth switch` opens the account picker and exits after one successful switch.
 
-- The picker uses the same account ordering as `list`.
+- The picker uses the same account ordering as `list`. A usage request timeout leaves the account available for manual selection. Live auto-switch skips candidates whose usage refresh failed.
 - `q` quits without switching.
 - `--api` forces foreground remote refresh before rendering.
 - `--skip-api` renders from stored data and local-only active-account refresh where available.
@@ -82,7 +82,7 @@ Daemons that support an in-place auth reload apply the credentials without inter
 - The restart helper has a fixed 120-second timeout. Failure or timeout preserves the selected files, reports an unconfirmed daemon account state, and returns exit code 1. Only the helper process is terminated and reaped on timeout; daemon shutdown/startup may already have begun. No automatic retry or credential rollback occurs.
 - Diagnostics and manual status/recovery commands are printed on stderr, with the selected home and executable. A successful version response proves responsiveness, not account identity.
 - In JSON mode, the switch-selection document carries a `daemon` field with the coordination outcome (for example `reloaded`, `deferred`, `restarted`, or `restart_failed`). The document can still accompany exit code 1 when the daemon restart fails.
-- `--live` runs the same coordination on a background thread after each accepted selection, reporting progress and the outcome on the status line without blocking input. Login, import, and remove retain their existing activation behavior and may also require manual daemon coordination.
+- `--live` runs the same coordination on a background thread after each accepted selection, reporting progress and the outcome on the status line without blocking input. Login uses the same daemon coordination as a one-shot switch. Import and remove may require manual daemon coordination.
 - Older installations without a daemon endpoint remain a successful no-op. Platforms outside Linux, macOS, and Windows receive an honest unsupported-coordination hint.
 
 No daemon-restart preference is persisted and the registry schema is unchanged.

@@ -1140,6 +1140,28 @@ test "Scenario: Given active usage at zero when picking a live auto-switch targe
     try std.testing.expectEqualStrings("user-1::acc-3", target_key.?);
 }
 
+test "usage timeout leaves the account selectable manually and skips it for auto-switch" {
+    const gpa = std.testing.allocator;
+    var reg = makeTestRegistry();
+    defer reg.deinit(gpa);
+
+    const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
+    try appendTestAccount(gpa, &reg, "user-a::acc-a", "a@example.com", "", .plus);
+    try appendTestAccount(gpa, &reg, "user-b::acc-b", "b@example.com", "", .plus);
+    reg.active_account_key = try gpa.dupe(u8, "user-a::acc-a");
+    reg.accounts.items[0].last_usage = testUsageSnapshotWithResets(now, 100, 20, 3600, 86400);
+    const overrides = [_]?[]const u8{ null, "TimedOut" };
+    var rows = try buildSwitchRowsWithUsageOverrides(gpa, &reg, &overrides);
+    defer rows.deinit(gpa);
+    try filterErroredRowsFromSelectableIndices(gpa, &rows);
+
+    const idx = selectableIndexForAccountKey(&rows, &reg, "user-b::acc-b") orelse return error.TestExpectedEqual;
+    try std.testing.expect(rows.items[rows.selectable_row_indices[idx]].has_error);
+    const target = try maybeAutoSwitchTargetKeyAlloc(gpa, .{ .reg = &reg, .usage_overrides = &overrides }, &rows);
+    defer if (target) |key| gpa.free(key);
+    try std.testing.expect(target == null);
+}
+
 test "Scenario: Given active usage above zero when picking a live auto-switch target then no target is chosen" {
     const gpa = std.testing.allocator;
     var reg = makeTestRegistry();

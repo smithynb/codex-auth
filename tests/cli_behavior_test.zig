@@ -443,15 +443,18 @@ test "Scenario: Given login with unknown flag when parsing then usage error is r
     try expectUsageError(result, .login, "unknown flag");
 }
 
-test "Scenario: Given login with device auth flag when parsing then device auth is preserved" {
+test "Scenario: Given login with device auth and daemon flags when parsing then both are preserved" {
     const gpa = std.testing.allocator;
-    const args = [_][:0]const u8{ "codex-auth", "login", "--device-auth" };
+    const args = [_][:0]const u8{ "codex-auth", "login", "--device-auth", "--no-restart-daemon" };
     var result = try cli.commands.parseArgs(gpa, &args);
     defer cli.commands.freeParseResult(gpa, &result);
 
     switch (result) {
         .command => |cmd| switch (cmd) {
-            .login => |opts| try std.testing.expect(opts.device_auth),
+            .login => |opts| {
+                try std.testing.expect(opts.device_auth);
+                try std.testing.expect(opts.no_restart_daemon);
+            },
             else => return error.TestExpectedEqual,
         },
         else => return error.TestExpectedEqual,

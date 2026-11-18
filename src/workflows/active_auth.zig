@@ -1,6 +1,8 @@
 const std = @import("std");
 const app_runtime = @import("../core/runtime.zig");
 const auth = @import("../auth/auth.zig");
+const cli = @import("../cli/root.zig");
+const daemon = @import("codex_daemon.zig");
 const registry = @import("../registry/root.zig");
 
 pub fn trackedActiveAccountKey(reg: *registry.Registry) ?[]const u8 {
@@ -144,4 +146,32 @@ pub fn selectBestRemainingAccountKeyByUsageAlloc(
         return try allocator.dupe(u8, reg.accounts.items[idx].account_key);
     }
     return null;
+}
+
+pub fn coordinateAfterActivation(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    no_restart_daemon: bool,
+) !daemon.Outcome {
+    var client = daemon.Client.init(allocator, codex_home) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        // A missing executable is only absence when the control socket is
+        // gone too; a live endpoint with an unlaunchable helper stays
+        // unconfirmed, because that daemon may still serve old credentials.
+        const outcome: daemon.Outcome = if (err == error.ExecutableRequired)
+            (if (try daemon.Client.controlEndpointPresent(codex_home)) .unknown else .not_running)
+        else
+            .unknown;
+        cli.output.printCodexDaemonDiagnostic(codex_home, "codex", outcome) catch {};
+        return outcome;
+    };
+    defer client.deinit();
+    const outcome = if (no_restart_daemon)
+        try client.reload()
+    else
+        try client.ensure(daemon.restart_timeout_ms);
+    // Best-effort stderr: a closed stderr must not skip JSON emission or
+    // replace the restart exit contract with a write error.
+    cli.output.printCodexDaemonDiagnostic(codex_home, client.executable, outcome) catch {};
+    return outcome;
 }

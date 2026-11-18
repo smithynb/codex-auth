@@ -3,16 +3,19 @@ const registry = @import("../registry/root.zig");
 
 pub const SwitchSelectionDisplay = struct {
     reg: *registry.Registry,
+    allow_auto_switch: bool = true,
     usage_overrides: ?[]const ?[]const u8,
 };
 
 pub const OwnedSwitchSelectionDisplay = struct {
     reg: registry.Registry,
+    allow_auto_switch: bool = true,
     usage_overrides: []?[]const u8,
 
     pub fn borrowed(self: *@This()) SwitchSelectionDisplay {
         return .{
             .reg = &self.reg,
+            .allow_auto_switch = self.allow_auto_switch,
             .usage_overrides = self.usage_overrides,
         };
     }

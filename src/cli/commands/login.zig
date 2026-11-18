@@ -15,6 +15,11 @@ pub fn parse(allocator: std.mem.Allocator, args: []const [:0]const u8) !types.Pa
             opts.device_auth = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--no-restart-daemon")) {
+            if (opts.no_restart_daemon) return common.usageErrorResult(allocator, .login, "duplicate `--no-restart-daemon` for `login`.", .{});
+            opts.no_restart_daemon = true;
+            continue;
+        }
         if (common.isHelpFlag(arg)) return common.usageErrorResult(allocator, .login, "`--help` must be used by itself for `login`.", .{});
         if (arg.len > 1 and std.mem.startsWith(u8, arg, "-")) return common.usageErrorResult(allocator, .login, "unknown flag `{s}` for `login`.", .{arg});
         return common.usageErrorResult(allocator, .login, "unexpected argument `{s}` for `login`.", .{arg});

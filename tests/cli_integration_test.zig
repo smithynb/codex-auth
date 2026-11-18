@@ -1601,6 +1601,14 @@ test "Scenario: Given refreshed active auth before login when running login then
     reg.active_account_activated_at_ms = std.Io.Timestamp.now(app_runtime.io(), .real).toMilliseconds();
     try registry.saveRegistry(gpa, codex_home, &reg);
 
+    if (builtin.target.os.tag != .windows) {
+        var dir = try tmp.dir.openDir(".codex", .{});
+        defer dir.close();
+        try fake_daemon.install(dir, fake_daemon.running ++
+            "[ \"$3\" = reload-auth ] || exit 91\n" ++
+            "cp \"$CODEX_HOME/auth.json\" \"$CODEX_HOME/daemon-auth.json\"\n");
+    }
+
     const new_email = "new-login@example.com";
     const new_auth = try fixtures.authJsonWithEmailPlan(gpa, new_email, "team");
     defer gpa.free(new_auth);
@@ -1624,6 +1632,11 @@ test "Scenario: Given refreshed active auth before login when running login then
 
     try expectSuccess(result);
 
+    if (builtin.target.os.tag != .windows) {
+        const daemon_auth = try fake_daemon.read(tmp.dir, ".codex/daemon-auth.json");
+        defer gpa.free(daemon_auth);
+        try std.testing.expectEqualStrings(new_auth, daemon_auth);
+    }
     const synced_old_snapshot = try fixtures.readFileAlloc(gpa, old_snapshot_path);
     defer gpa.free(synced_old_snapshot);
     try std.testing.expectEqualStrings(fresh_old_auth, synced_old_snapshot);

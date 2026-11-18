@@ -27,7 +27,12 @@ pub const SwitchRow = struct {
     depth: u8,
     is_active: bool,
     has_error: bool,
+    usage_timed_out: bool = false,
     is_header: bool,
+
+    fn selectableForSwitch(self: SwitchRow) bool {
+        return !self.has_error or self.usage_timed_out;
+    }
 
     fn deinit(self: *SwitchRow, allocator: std.mem.Allocator) void {
         allocator.free(self.account);
@@ -52,13 +57,13 @@ pub const SwitchRows = struct {
 pub fn filterErroredRowsFromSelectableIndices(allocator: std.mem.Allocator, rows: *SwitchRows) !void {
     var selectable_count: usize = 0;
     for (rows.selectable_row_indices) |row_idx| {
-        if (!rows.items[row_idx].has_error) selectable_count += 1;
+        if (rows.items[row_idx].selectableForSwitch()) selectable_count += 1;
     }
 
     const filtered = try allocator.alloc(usize, selectable_count);
     var next_idx: usize = 0;
     for (rows.selectable_row_indices) |row_idx| {
-        if (rows.items[row_idx].has_error) continue;
+        if (!rows.items[row_idx].selectableForSwitch()) continue;
         filtered[next_idx] = row_idx;
         next_idx += 1;
     }
@@ -146,9 +151,11 @@ fn buildSwitchRowsForDisplay(
             const rate_5h = registry.resolveRateWindow(rec.last_usage, 300, true);
             const rate_week = registry.resolveRateWindow(rec.last_usage, 10080, false);
             const usage_override = usageOverrideForAccount(usage_overrides, account_idx);
-            const rate_5h_str = try usageCellTextAlloc(allocator, rate_5h, usage_override, reg.time_format);
+            const timed_out = std.mem.eql(u8, usage_override orelse "", @errorName(error.TimedOut));
+            const usage_label = if (timed_out) "Usage timed out" else usage_override;
+            const rate_5h_str = try usageCellTextAlloc(allocator, rate_5h, usage_label, reg.time_format);
             errdefer allocator.free(rate_5h_str);
-            const rate_week_str = try usageCellTextAlloc(allocator, rate_week, usage_override, reg.time_format);
+            const rate_week_str = try usageCellTextAlloc(allocator, rate_week, usage_label, reg.time_format);
             errdefer allocator.free(rate_week_str);
             const last = try timefmt.formatRelativeTimeOrDashAlloc(allocator, rec.last_usage_at, now);
             errdefer allocator.free(last);
@@ -162,6 +169,7 @@ fn buildSwitchRowsForDisplay(
                 .depth = display_row.depth,
                 .is_active = display_row.is_active,
                 .has_error = usage_override != null,
+                .usage_timed_out = timed_out,
                 .is_header = false,
             };
             widths.email = @max(widths.email, text_width.displayWidth(display_row.account_cell) + (@as(usize, display_row.depth) * 2));

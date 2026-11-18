@@ -55,6 +55,7 @@ fn bestAutoSwitchCandidateSelectableIndex(
     var best_account_idx: ?usize = null;
 
     for (rows.selectable_row_indices, 0..) |row_idx, selectable_idx| {
+        if (rows.items[row_idx].has_error) continue;
         const account_idx = rows.items[row_idx].account_index orelse continue;
         const rec = &reg.accounts.items[account_idx];
         if (std.mem.eql(u8, rec.account_key, active_account_key)) continue;
@@ -74,6 +75,7 @@ pub fn maybeAutoSwitchTargetKeyAlloc(
     display: SwitchSelectionDisplay,
     rows: *const SwitchRows,
 ) !?[]u8 {
+    if (!display.allow_auto_switch) return null;
     const now = std.Io.Timestamp.now(app_runtime.io(), .real).toSeconds();
     if (!shouldAutoSwitchActiveAccount(display, now)) return null;
 

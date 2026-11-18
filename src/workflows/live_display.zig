@@ -276,6 +276,7 @@ pub fn cloneSwitchSelectionDisplayAlloc(
     errdefer reg.deinit(allocator);
     return .{
         .reg = reg,
+        .allow_auto_switch = display.allow_auto_switch,
         .usage_overrides = try cloneSwitchUsageOverridesAlloc(allocator, display.usage_overrides, display.reg.accounts.items.len),
     };
 }
@@ -366,6 +367,7 @@ pub fn buildRemoveLiveActionDisplay(
 
     var updated_display: cli.live.OwnedSwitchSelectionDisplay = .{
         .reg = reg,
+        .allow_auto_switch = current_display.allow_auto_switch,
         .usage_overrides = usage_overrides,
     };
     errdefer updated_display.deinit(allocator);
@@ -402,6 +404,7 @@ pub fn loadStoredSwitchSelectionDisplayWithRefreshError(
 ) !SwitchLoadedDisplay {
     var loaded = try loadStoredSwitchSelectionDisplay(allocator, codex_home, target, api_mode);
     errdefer loaded.display.deinit(allocator);
+    loaded.display.allow_auto_switch = false;
     loaded.refresh_error_name = try allocator.dupe(u8, @errorName(refresh_err));
     return loaded;
 }

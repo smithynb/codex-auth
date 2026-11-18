@@ -12,6 +12,7 @@ pub const ListOptions = struct {
 };
 pub const LoginOptions = struct {
     device_auth: bool = false,
+    no_restart_daemon: bool = false,
 };
 pub const ImportSource = enum { standard, cpa };
 pub const ImportOptions = struct {

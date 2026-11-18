@@ -114,19 +114,27 @@ pub fn maybeRefreshAccountNamesForAuthInfoWithAccountApiEnabled(
     fetcher: AccountFetchFn,
     account_api_enabled: bool,
 ) !bool {
-    const chatgpt_user_id = info.chatgpt_user_id orelse return false;
-    if (!shouldRefreshWorkspaceAccountNamesForUserScopeWithAccountApiEnabled(reg, chatgpt_user_id, account_api_enabled)) return false;
-    const access_token = info.access_token orelse return false;
-    const chatgpt_account_id = info.chatgpt_account_id orelse return false;
-
-    const result = fetcher(allocator, access_token, chatgpt_account_id) catch |err| {
-        std.log.warn("account metadata refresh skipped: {s}", .{@errorName(err)});
-        return false;
-    };
+    const result = (try fetchWorkspaceNames(allocator, reg, info, fetcher, account_api_enabled)) orelse return false;
     defer result.deinit(allocator);
+    return try registry.applyAccountNamesForUser(allocator, reg, info.chatgpt_user_id.?, result.entries orelse return false);
+}
 
-    const entries = result.entries orelse return false;
-    return try registry.applyAccountNamesForUser(allocator, reg, chatgpt_user_id, entries);
+pub fn fetchWorkspaceNames(
+    allocator: std.mem.Allocator,
+    reg: *registry.Registry,
+    info: *const auth.AuthInfo,
+    fetcher: AccountFetchFn,
+    account_api_enabled: bool,
+) !?account_api.FetchResult {
+    const chatgpt_user_id = info.chatgpt_user_id orelse return null;
+    if (!shouldRefreshWorkspaceAccountNamesForUserScopeWithAccountApiEnabled(reg, chatgpt_user_id, account_api_enabled)) return null;
+    const access_token = info.access_token orelse return null;
+    const chatgpt_account_id = info.chatgpt_account_id orelse return null;
+
+    return fetcher(allocator, access_token, chatgpt_account_id) catch |err| {
+        std.log.warn("account metadata refresh skipped: {s}", .{@errorName(err)});
+        return null;
+    };
 }
 
 pub fn loadActiveAuthInfoForAccountRefresh(allocator: std.mem.Allocator, codex_home: []const u8) !?auth.AuthInfo {

@@ -311,6 +311,7 @@ const list_flags = [_]FlagSpec{
 };
 const login_flags = [_]FlagSpec{
     .{ .name = "--device-auth", .desc = "Run codex login with device auth" },
+    .{ .name = "--no-restart-daemon", .desc = "Attempt in-place daemon reload; never restart" },
 };
 const import_flags = [_]FlagSpec{
     .{ .name = "--alias", .desc = "Set an alias for a single imported account", .value = .freeform },

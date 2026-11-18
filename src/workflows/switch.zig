@@ -6,7 +6,7 @@ const live_flow = @import("live.zig");
 const preflight = @import("preflight.zig");
 const query_mod = @import("query.zig");
 const results = @import("results.zig");
-const daemon = @import("codex_daemon.zig");
+const coordinateAfterActivation = @import("active_auth.zig").coordinateAfterActivation;
 
 const ensureLiveTty = preflight.ensureLiveTty;
 const resolveSwitchQueryLocally = query_mod.resolveSwitchQueryLocally;
@@ -236,8 +236,7 @@ fn handleSwitchQueryJson(
     try activateSelection(allocator, codex_home, &reg, selected_account_key, opts);
 }
 
-// One-shot picker, query, previous, and JSON routes share this boundary. Live,
-// login, import, and remove retain their existing activation behavior.
+// One-shot picker, query, previous, and JSON switches share this boundary.
 fn activateSelection(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -252,30 +251,7 @@ fn activateSelection(
         return if (opts.json) printJsonMutationError(err) else err;
     };
     if (!opts.json) try cli.output.printSwitchedAccount(allocator, reg, account_key);
-    var client = daemon.Client.init(allocator, codex_home) catch |err| {
-        if (err == error.OutOfMemory) return err;
-        // A missing executable is only absence when the control socket is
-        // gone too; a live endpoint with an unlaunchable helper stays
-        // unconfirmed, because that daemon may still serve old credentials.
-        const outcome: daemon.Outcome = if (err == error.ExecutableRequired)
-            (if (try daemon.Client.controlEndpointPresent(codex_home)) .unknown else .not_running)
-        else
-            .unknown;
-        cli.output.printCodexDaemonDiagnostic(codex_home, "codex", outcome) catch {};
-        if (!opts.json) return;
-        var result = results.buildSwitchResult(allocator, reg, account_key, outcome) catch |build_err| return printJsonWorkflowError(build_err);
-        defer result.deinit(allocator);
-        try cli.json_output.printSwitchResult(&result);
-        return;
-    };
-    defer client.deinit();
-    const outcome = if (opts.no_restart_daemon)
-        try client.reload()
-    else
-        try client.ensure(daemon.restart_timeout_ms);
-    // Best-effort stderr: a closed stderr must not skip JSON emission or
-    // replace the restart exit contract with a write error.
-    cli.output.printCodexDaemonDiagnostic(codex_home, client.executable, outcome) catch {};
+    const outcome = try coordinateAfterActivation(allocator, codex_home, opts.no_restart_daemon);
     if (opts.json) {
         var result = results.buildSwitchResult(allocator, reg, account_key, outcome) catch |err| return printJsonWorkflowError(err);
         defer result.deinit(allocator);

@@ -38,7 +38,7 @@ pub fn writeHelp(
     try writeCommandSummary(out, use_color, "--version, -V", "Show version");
     try writeCommandSummary(out, use_color, "-", "Switch to the previous active account");
     try writeCommandSummary(out, use_color, "list [--live] [--active] [--api|--skip-api] [--json]", "List available accounts");
-    try writeCommandSummary(out, use_color, "login [--device-auth]", "Login and add the current account");
+    try writeCommandSummary(out, use_color, "login [--device-auth] [--no-restart-daemon]", "Login and add the current account");
     try writeCommandSummary(out, use_color, "import", "Import auth files or rebuild registry");
     try writeCommandDetail(out, use_color, "import <path> [--alias <alias>]");
     try writeCommandDetail(out, use_color, "import --cpa [<path>] [--alias <alias>]");
@@ -203,7 +203,7 @@ fn writeUsageLines(out: *std.Io.Writer, topic: HelpTopic) !void {
         },
         .list => try out.writeAll("  codex-auth list [--live] [--active] [--api|--skip-api] [--json]\n"),
         .login => {
-            try out.writeAll("  codex-auth login\n");
+            try out.writeAll("  codex-auth login [--device-auth] [--no-restart-daemon]\n");
             try out.writeAll("  codex-auth login --device-auth\n");
         },
         .import_auth => {
@@ -287,6 +287,7 @@ fn writeOptionLines(out: *std.Io.Writer, topic: HelpTopic) !void {
         },
         .login => {
             try out.writeAll("  --device-auth   Run `codex login --device-auth` before adding the account.\n");
+            try out.writeAll("  --no-restart-daemon   Reload credentials in place when supported. Skip the restart fallback.\n");
         },
         .import_auth => {
             try out.writeAll("  <path>           Import one auth file or every supported auth file in a directory.\n");

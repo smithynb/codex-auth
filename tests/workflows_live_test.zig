@@ -1007,6 +1007,7 @@ test "live fallback display preserves the refresh error name" {
     defer loaded.display.deinit(gpa);
     defer if (loaded.refresh_error_name) |name| gpa.free(name);
 
+    try std.testing.expect(!loaded.display.borrowed().allow_auto_switch);
     try std.testing.expectEqualStrings("CurlRequired", loaded.refresh_error_name.?);
 }
 

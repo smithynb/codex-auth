@@ -3,17 +3,16 @@
 ## Usage
 
 ```shell
-codex-auth login
-codex-auth login --device-auth
+codex-auth login [--device-auth] [--no-restart-daemon]
 ```
 
 ## Behavior
 
 - Runs `codex login`, or `codex login --device-auth` when requested.
-- Reads the resulting `auth.json` from the active Codex home.
+- Reads and validates the new credentials from a temporary Codex home.
 - Adds or updates the current account in `registry.json`.
 - Stores a managed account snapshot under `accounts/<account file key>.auth.json`.
-- Makes the logged-in account active when import succeeds.
+- Makes the logged-in account active and applies the credentials to a running daemon using the same rules as [switch](./switch.md#applying-a-switch-to-a-running-daemon). A daemon without reload support may restart and disconnect attached sessions. Use `--no-restart-daemon` to allow only an in-place reload.
 
 ## Notes
 

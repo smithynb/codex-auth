@@ -13,7 +13,7 @@ codex-auth list --json
 
 ## Behavior
 
-- Lists stored accounts from `registry.json`.
+- Lists stored accounts from `registry.json`. The active marker reflects the selected credentials on disk. A running daemon can still use its previous account after a deferred or failed reload.
 - Syncs the current `auth.json` into the registry before rendering when the current auth file is parseable.
 - Shows selectable row numbers using the same ordering as `switch` and `remove`.
 - Groups rows by email when the same email owns multiple account snapshots.
